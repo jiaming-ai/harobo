@@ -1,0 +1,3 @@
+[submodule "perception/detection/Detic"]
+	path = perception/detection/Detic
+	url = https://github.com/jiaming-robot-learning/Detic.git
