@@ -20,13 +20,13 @@ sys.path.insert(
 )
 from centernet.config import add_centernet_config  # noqa: E402
 
-from home_robot.perception.detection.detic.Detic.detic.config import (  # noqa: E402
+from perception.detection.Detic.detic.config import (  # noqa: E402
     add_detic_config,
 )
-from home_robot.perception.detection.detic.Detic.detic.modeling.text.text_encoder import (  # noqa: E402
+from perception.detection.Detic.detic.modeling.text.text_encoder import (  # noqa: E402
     build_text_encoder,
 )
-from home_robot.perception.detection.detic.Detic.detic.modeling.utils import (  # noqa: E402
+from perception.detection.Detic.detic.modeling.utils import (  # noqa: E402
     reset_cls_test,
 )
 
@@ -215,6 +215,7 @@ class DeticPerception(PerceptionModule):
         obs: Observations,
         depth_threshold: Optional[float] = None,
         draw_instance_predictions: bool = True,
+        update_semanitc: bool = True,
     ) -> Observations:
         """
         Arguments:
@@ -245,6 +246,21 @@ class DeticPerception(PerceptionModule):
         else:
             obs.task_observations["semantic_frame"] = None
 
+        #### DEVELOPING ####
+        # draw objectiveness boxes
+        proposals = pred["proposals"]
+        proposal_scores = proposals.scores.cpu().numpy()
+        proposal_boxes = proposals.pred_boxes.tensor.cpu().numpy()
+        # proposal_boxes = proposal_boxes[proposal_scores > 0.4]
+        visualizer = Visualizer(
+                image[:, :, ::-1], self.metadata, instance_mode=self.instance_mode
+            )
+        for i in range(len(proposal_boxes)):
+            visualizer.draw_box(
+                box_coord=proposal_boxes[i]
+            )
+        objectiveness_visualization = visualizer.get_output().get_image()
+
         # Sort instances by mask size
         masks = pred["instances"].pred_masks.cpu().numpy()
         class_idcs = pred["instances"].pred_classes.cpu().numpy()
@@ -257,12 +273,17 @@ class DeticPerception(PerceptionModule):
 
         semantic_map, instance_map = overlay_masks(masks, class_idcs, (height, width))
 
-        obs.semantic = semantic_map.astype(int)
+        if update_semanitc:
+            obs.semantic = semantic_map.astype(int)
+        
         obs.task_observations["instance_map"] = instance_map
         obs.task_observations["instance_classes"] = class_idcs
         obs.task_observations["instance_scores"] = scores
+        obs.task_observations["objectiveness_visualization"] = objectiveness_visualization
 
         return obs
+
+    
 
 
 def setup_cfg(args):
@@ -328,7 +349,7 @@ def get_parser():
     parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.45,
+        default=0.1,
         help="Minimum score for instance predictions to be shown",
     )
     parser.add_argument(

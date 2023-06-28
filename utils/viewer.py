@@ -6,7 +6,7 @@ from home_robot.core.interfaces import DiscreteNavigationAction
 class OpenCVViewer:
     def __init__(self, name="OpenCVViewer", exit_on_escape=True):
         self.name = name
-        cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE) # use cv2.WINDOW_NORMAL to allow window resizing for large images
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL) # use cv2.WINDOW_NORMAL to allow window resizing for large images
         self.exit_on_escape = exit_on_escape
 
     def parse_key(self, key):
@@ -44,16 +44,20 @@ class OpenCVViewer:
         if non_blocking:
             return
         else:
-            key = cv2.waitKey(delay)
-            if key == 27:  # escape
-                if self.exit_on_escape:
+            action = DiscreteNavigationAction.STOP
+            while True:
+                key = cv2.waitKey(delay)
+                if key == 27:  # escape
                     exit(0)
+                elif key == -1:  # timeout
+                    pass
+                elif key == 32:  # space
+                    return {'info':'done','action':action}
                 else:
-                    return None
-            elif key == -1:  # timeout
-                pass
-            else:
-                return self.parse_key(key)
+                    action = self.parse_key(key)
+                    if action is not None:
+                        return {'action':action}
+                
 
     def close(self):
         cv2.destroyWindow(self.name)

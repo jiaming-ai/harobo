@@ -5,17 +5,17 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from home_robot.agent.objectnav_agent.objectnav_agent import ObjectNavAgent
+from agent.obj_nav.objectnav_agent import ObjectNavAgent
 
-from home_robot.agent.ovmm_agent.ppo_agent import PPOAgent
+from agent.ovmm.ppo_agent import PPOAgent
 from home_robot.core.interfaces import DiscreteNavigationAction, Observations
 from home_robot.manipulation import HeuristicPickPolicy, HeuristicPlacePolicy
 from home_robot.perception.constants import RearrangeBasicCategories
 
 import os
 from pathlib import Path
-HOME_ROBOT_BASE_DIR = str(Path(__file__).resolve().parent.parent.parent / "home-robot") + "/"
-from agent.ovmm_perception import (
+# HOME_ROBOT_BASE_DIR = str(Path(__file__).resolve().parent.parent.parent / "home-robot") + "/"
+from agent.ovmm.ovmm_perception import (
     OvmmPerception,
     build_vocab_from_category_map,
     read_category_map_file,
@@ -62,11 +62,16 @@ class URAgent(ObjectNavAgent):
         self.semantic_sensor = None
         self.skip_skills = config.AGENT.skip_skills
         self.max_pick_attempts = 10
-        if config.GROUND_TRUTH_SEMANTICS == 0:
-            self.semantic_sensor = OvmmPerception(config, device_id)
-            self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(
-                config.ENVIRONMENT.category_map_file
-            )
+        # if config.GROUND_TRUTH_SEMANTICS == 0:
+        #     self.semantic_sensor = OvmmPerception(config, device_id)
+        #     self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(
+        #         config.ENVIRONMENT.category_map_file
+        #     )
+        # always use detic to visualize
+        self.semantic_sensor = OvmmPerception(config, device_id)
+        self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(
+            config.ENVIRONMENT.category_map_file
+        )
         if config.AGENT.SKILLS.PICK.type == "heuristic" and not self.skip_skills.pick:
             self.pick_policy = HeuristicPickPolicy(config, self.device)
         if config.AGENT.SKILLS.PLACE.type == "heuristic" and not self.skip_skills.place:
@@ -124,12 +129,16 @@ class URAgent(ObjectNavAgent):
         else:
             semantic_category_mapping = self.semantic_sensor.current_vocabulary
 
-        if use_detic_viz:
-            semantic_frame = obs.task_observations["semantic_frame"]
-        else:
-            semantic_frame = np.concatenate(
-                [obs.rgb, obs.semantic[:, :, np.newaxis]], axis=2
-            ).astype(np.uint8)
+        # if use_detic_viz:
+        #     semantic_frame = obs.task_observations["semantic_frame"]
+        # else:
+        #     semantic_frame = np.concatenate(
+        #         [obs.rgb, obs.semantic[:, :, np.newaxis]], axis=2
+        #     ).astype(np.uint8)
+
+        semantic_frame = np.concatenate(
+            [obs.rgb, obs.semantic[:, :, np.newaxis]], axis=2
+        ).astype(np.uint8)
 
         info = {
             "semantic_frame": semantic_frame,
@@ -207,15 +216,16 @@ class URAgent(ObjectNavAgent):
         This method is called at the first timestep of every episode before any action is taken.
         """
         print("Initializing episode...")
-        if self.config.GROUND_TRUTH_SEMANTICS == 0:
+        if self.semantic_sensor is not None:
             self._update_semantic_vocabs(obs)
-            if (
-                self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
-                and not self.skip_skills.nav_to_obj
-            ):
-                self._set_semantic_vocab(SemanticVocab.FULL, force_set=True)
-            else:
-                self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
+            self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
+            # if (
+            #     self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
+            #     and not self.skip_skills.nav_to_obj
+            # ):
+            #     self._set_semantic_vocab(SemanticVocab.FULL, force_set=True)
+            # else:
+            #     self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
 
     def _switch_to_next_skill(
         self, e: int, next_skill: Skill, info: Dict[str, Any]
@@ -280,7 +290,7 @@ class URAgent(ObjectNavAgent):
         """
         Set active vocabulary for semantic sensor to use to the given ID.
         """
-        if self.config.GROUND_TRUTH_SEMANTICS == 0 and (
+        if self.semantic_sensor is not None and (
             force_set or self.semantic_sensor.current_vocabulary_id != vocab_id
         ):
             self.semantic_sensor.set_vocabulary(vocab_id)
@@ -512,10 +522,12 @@ class URAgent(ObjectNavAgent):
         if self.timesteps[0] == 0:
             self._init_episode(obs)
 
-        if self.config.GROUND_TRUTH_SEMANTICS == 0:
-            obs = self.semantic_sensor(obs)
-        else:
-            obs.task_observations["semantic_frame"] = None
+        # if self.config.GROUND_TRUTH_SEMANTICS == 0:
+        #     obs = self.semantic_sensor(obs)
+        # else:
+        #     obs.task_observations["semantic_frame"] = None
+        obs = self.semantic_sensor(obs) # visualize detection
+
         info = self._get_info(obs)
 
         self.timesteps[0] += 1

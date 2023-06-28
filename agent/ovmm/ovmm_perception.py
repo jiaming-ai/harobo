@@ -126,7 +126,9 @@ class OvmmPerception:
         Run segmentation model and preprocess observations for OVMM skills
         """
         obs = self._segmentation.predict(
-            obs, depth_threshold=0.5, draw_instance_predictions=self._use_detic_viz
+            obs, depth_threshold=0.5, 
+            draw_instance_predictions=self._use_detic_viz,
+            update_semanitc= not self.config.GROUND_TRUTH_SEMANTICS, # for development
         )
         self._process_obs(obs)
         return obs

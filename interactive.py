@@ -9,7 +9,7 @@ from enum import IntEnum, auto
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
-from agent.ura import URAgent
+from agent.ovmm.ura import URAgent
 
 HOME_ROBOT_BASE_DIR = str(Path(__file__).resolve().parent.parent / "home-robot") + "/"
 
@@ -48,11 +48,11 @@ from utils.visualization import (
     visualize_pred,
     save_img_tensor)
 
-from home_robot.agent.ovmm_agent.ovmm_perception import (
-    OvmmPerception,
-    build_vocab_from_category_map,
-    read_category_map_file,
-)
+# from home_robot.agent.ovmm_agent.ovmm_perception import (
+#     OvmmPerception,
+#     build_vocab_from_category_map,
+#     read_category_map_file,
+# )
 
 
 
@@ -62,35 +62,35 @@ from home_robot.agent.ovmm_agent.ovmm_perception import (
 #     config = get_habitat_config(path, overrides=opts, configs_dir=configs_dir)
 #     return config, ""
 
-class SemanticVocab(IntEnum):
-    FULL = auto()
-    SIMPLE = auto()
+# class SemanticVocab(IntEnum):
+#     FULL = auto()
+#     SIMPLE = auto()
 
 
-def update_detic_perception_vocab(obs, perception,config):
-    obj_name_to_id, rec_name_to_id = read_category_map_file(
-        config.ENVIRONMENT.category_map_file
-    )
+# def update_detic_perception_vocab(obs, perception,config):
+#     obj_name_to_id, rec_name_to_id = read_category_map_file(
+#         config.ENVIRONMENT.category_map_file
+#     )
     
-    obj_id_to_name = {
-        0: obs.task_observations["object_name"],
-    }
-    simple_rec_id_to_name = {
-        0: obs.task_observations["start_recep_name"],
-        1: obs.task_observations["place_recep_name"],
-    }
+#     obj_id_to_name = {
+#         0: obs.task_observations["object_name"],
+#     }
+#     simple_rec_id_to_name = {
+#         0: obs.task_observations["start_recep_name"],
+#         1: obs.task_observations["place_recep_name"],
+#     }
 
-    # Simple vocabulary contains only object and necessary receptacles
-    simple_vocab = build_vocab_from_category_map(
-        obj_id_to_name, simple_rec_id_to_name
-    )
-    perception.update_vocubulary_list(simple_vocab, SemanticVocab.SIMPLE)
+#     # Simple vocabulary contains only object and necessary receptacles
+#     simple_vocab = build_vocab_from_category_map(
+#         obj_id_to_name, simple_rec_id_to_name
+#     )
+#     perception.update_vocubulary_list(simple_vocab, SemanticVocab.SIMPLE)
 
-    # Full vocabulary contains the object and all receptacles
-    full_vocab = build_vocab_from_category_map(obj_id_to_name, rec_name_to_id)
-    perception.update_vocubulary_list(full_vocab, SemanticVocab.FULL)
+#     # Full vocabulary contains the object and all receptacles
+#     full_vocab = build_vocab_from_category_map(obj_id_to_name, rec_name_to_id)
+#     perception.update_vocubulary_list(full_vocab, SemanticVocab.FULL)
 
-    perception.set_vocabulary(SemanticVocab.SIMPLE)
+#     perception.set_vocabulary(SemanticVocab.SIMPLE)
 
 def create_ovmm_env_fn(config):
     """Create habitat environment using configsand wrap HabitatOpenVocabManipEnv around it. This function is used by VectorEnv for creating the individual environments"""
@@ -214,27 +214,34 @@ class InteractiveEvaluator():
             if not self.args.no_render:
                 # ob = detic_perception(ob)
 
-                draw_ob = ob.rgb
+                gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
+                draw_ob = np.concatenate([ob.rgb,gt_semantic], axis=1)
                 # if agent_info is not None:
                 #     draw_ob = self.env.visualizer.visualize(**agent_info)
                 if 'semantic_frame' in ob.task_observations:
                     draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
+                
+                if 'objectiveness_visualization' in ob.task_observations:
+                    draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
                 user_action = self.viewer.imshow(
                     draw_ob, delay=0 if self.args.interactive else 2
                 )
 
             if self.args.interactive:
-                action = user_action
+                if 'info' in user_action:
+                    done = True
+                action = user_action['action']
 
             outputs = env.apply_action(action, agent_info)
             ob, done, info = outputs
 
             if done:
                 ob = env.reset()
-                # update_detic_perception_vocab(ob, detic_perception)
+                 # update_detic_perception_vocab(ob, detic_perception)
                 agent.reset_vectorized_for_env(
                     0, self.env.current_episode()
                 )
+                print(f'Goal: {ob.task_observations["goal_name"]}')
 
         env.close()
         self.write_results(episode_metrics)
