@@ -2,10 +2,13 @@ import time
 
 import torch.nn as nn
 
-from home_robot.mapping.semantic.categorical_2d_semantic_map_module import (
+from mapping.semantic.categorical_2d_semantic_map_module import (
     Categorical2DSemanticMapModule,
 )
-from home_robot.navigation_policy.object_navigation.objectnav_frontier_exploration_policy import (
+from mapping.semantic.categorical_2d_prob_semantic_map_module import (
+    Categorical2DProbabilisticSemanticMapModule,
+)
+from navigation_policy.object_navigation.objectnav_frontier_exploration_policy import (
     ObjectNavFrontierExplorationPolicy,
 )
 
@@ -26,6 +29,8 @@ class ObjectNavAgentModule(nn.Module):
             map_size_cm=config.AGENT.SEMANTIC_MAP.map_size_cm,
             map_resolution=config.AGENT.SEMANTIC_MAP.map_resolution,
             vision_range=config.AGENT.SEMANTIC_MAP.vision_range,
+            min_depth=config.ENVIRONMENT.min_depth,
+            max_depth=config.ENVIRONMENT.max_depth,
             explored_radius=config.AGENT.SEMANTIC_MAP.explored_radius,
             been_close_to_radius=config.AGENT.SEMANTIC_MAP.been_close_to_radius,
             global_downscaling=config.AGENT.SEMANTIC_MAP.global_downscaling,
@@ -38,6 +43,10 @@ class ObjectNavAgentModule(nn.Module):
             dilate_obstacles=config.AGENT.SEMANTIC_MAP.dilate_obstacles,
             dilate_size=config.AGENT.SEMANTIC_MAP.dilate_size,
             dilate_iter=config.AGENT.SEMANTIC_MAP.dilate_iter,
+            probabilistic=config.AGENT.SEMANTIC_MAP.use_probability_map,
+            probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior,
+            close_range=config.AGENT.SEMANTIC_MAP.close_range,
+            confident_threshold=config.AGENT.SEMANTIC_MAP.confident_threshold,
         )
         self.policy = ObjectNavFrontierExplorationPolicy(
             exploration_strategy=config.AGENT.exploration_strategy
@@ -64,6 +73,7 @@ class ObjectNavAgentModule(nn.Module):
         seq_start_recep_goal_category=None,
         seq_end_recep_goal_category=None,
         seq_nav_to_recep=None,
+        detection_results=None,
     ):
         """Update maps and poses with a sequence of observations, and predict
         high-level goals from map features.
@@ -139,6 +149,7 @@ class ObjectNavAgentModule(nn.Module):
             init_global_pose,
             init_lmb,
             init_origins,
+            detection_results
         )
 
         # t1 = time.time()

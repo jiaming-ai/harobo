@@ -6,10 +6,10 @@ import numpy as np
 import torch
 
 from mapping.map_utils import MapSizeParameters, init_map_and_pose_for_env
-from mapping.semantic.constants import MapConstants as MC
+from mapping.semantic.constants import ProbabilisticMapConstants as MC
 
 
-class Categorical2DSemanticMapState:
+class Categorical2DProbabilisticSemanticMapState:
     """
     This class holds a dense 2D semantic map with one channel per object
     category, the global and local map and sensor pose, as well as the agent's
@@ -29,7 +29,6 @@ class Categorical2DSemanticMapState:
         map_resolution: int,
         map_size_cm: int,
         global_downscaling: int,
-        probability_prior: float,
     ):
         """
         Arguments:
@@ -61,7 +60,8 @@ class Categorical2DSemanticMapState:
         # 2: Current Agent Location
         # 3: Past Agent Locations
         # 4: Regions agent has been close to
-        # 5, 6, 7, .., num_sem_categories + 5: Semantic Categories
+        # 5: Probability of goal object being at location (i, j)
+        # 6, 7, .., num_sem_categories + 6: Semantic Categories
         num_channels = self.num_sem_categories + MC.NON_SEM_CHANNELS
 
         self.global_map = torch.zeros(
@@ -99,7 +99,6 @@ class Categorical2DSemanticMapState:
             (self.num_environments, self.local_map_size, self.local_map_size)
         )
 
-        self.prior = probability_prior
     def init_map_and_pose(self):
         """Initialize global and local map and sensor pose variables."""
         for e in range(self.num_environments):
@@ -120,10 +119,6 @@ class Categorical2DSemanticMapState:
             self.map_size_parameters,
         )
         self.goal_map[e] *= 0.0
-
-        # Set probability to priors
-        self.global_map[:, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
-        self.local_map[:, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
 
     def update_frontier_map(self, e: int, frontier_map: np.ndarray):
         """Update the current exploration frontier."""
@@ -172,24 +167,6 @@ class Categorical2DSemanticMapState:
         ].argmax(0)
         return semantic_map
 
-    def get_probability_map_normalized(self, e) -> np.ndarray:
-        """Get local probability map for an environment."""
-        prob_map = torch.sigmoid(self.local_map[e, MC.PROBABILITY_MAP, :, :])
-        prob_map = prob_map / prob_map.sum()
-        
-        return np.copy(prob_map.cpu().numpy())
-    
-    def get_probability_map(self, e) -> np.ndarray:
-        """Get local probability map for an environment."""
-        prob_map = torch.sigmoid(self.local_map[e, MC.PROBABILITY_MAP, :, :])
-        
-        return np.copy(prob_map.cpu().numpy())
-    
-    def get_probability_map_entropy(self, e) -> float:
-        """Get local probability map entropy for an environment."""
-        prob_map = self.get_probability_map_normalized(e)
-        return np.sum(-prob_map * np.log(prob_map + 1e-5)).item()
-    
     def get_planner_pose_inputs(self, e) -> np.ndarray:
         """Get local planner pose inputs for an environment.
 

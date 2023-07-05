@@ -216,6 +216,8 @@ class URAgent(ObjectNavAgent):
         This method is called at the first timestep of every episode before any action is taken.
         """
         print("Initializing episode...")
+        # use only relevant semantic categories (obj, start_rec, goal_rec) 
+        # maight use more categories if we learn a prior over recs
         if self.semantic_sensor is not None:
             self._update_semantic_vocabs(obs)
             self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)

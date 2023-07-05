@@ -32,7 +32,7 @@ AGENT:
     num_sem_categories: 5    # Following 5 categories: ["misc", "object_category", "start_receptacle", "goal_receptacle", "others"]
     map_size_cm: 4800        # global map size (in centimeters)
     map_resolution: 5        # size of map bins (in centimeters)
-    vision_range: 100        # diameter of local map region visible by the agent (in cells)
+    vision_range: 200        # diameter of local map region visible by the agent (in cells)
     global_downscaling: 2    # ratio of global over local map
     du_scale: 4              # frame downscaling before projecting to point cloud
     cat_pred_threshold: 1.0  # number of depth points to be in bin to classify it as a certain semantic category
@@ -46,6 +46,10 @@ AGENT:
     dilate_obstacles: True
     dilate_size: 3
     dilate_iter: 1
+    use_probability_map: True
+    probability_prior: 0.1
+    confident_threshold: 0.6 # confidence threshold for the probability map
+    close_range: 150 # in cm, within which the agent is considered to be close to the object
 
   SKILLS:
     GAZE_OBJ:

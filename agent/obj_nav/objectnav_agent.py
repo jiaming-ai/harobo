@@ -15,6 +15,9 @@ from home_robot.core.interfaces import DiscreteNavigationAction, Observations
 from mapping.semantic.categorical_2d_semantic_map_state import (
     Categorical2DSemanticMapState,
 )
+from mapping.semantic.categorical_2d_prob_semantic_map_state import (
+    Categorical2DProbabilisticSemanticMapState,
+)
 from navigation_planner.discrete_planner import DiscretePlanner
 
 from .objectnav_agent_module import ObjectNavAgentModule
@@ -58,6 +61,7 @@ class ObjectNavAgent(Agent):
             map_resolution=config.AGENT.SEMANTIC_MAP.map_resolution,
             map_size_cm=config.AGENT.SEMANTIC_MAP.map_size_cm,
             global_downscaling=config.AGENT.SEMANTIC_MAP.global_downscaling,
+            probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior,
         )
         agent_radius_cm = config.AGENT.radius * 100.0
         agent_cell_radius = int(
@@ -92,6 +96,8 @@ class ObjectNavAgent(Agent):
         self.last_poses = None
         self.verbose = config.AGENT.PLANNER.verbose
 
+        self._use_probability_map = config.AGENT.SEMANTIC_MAP.use_probability_map
+        self.probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior
     # ------------------------------------------------------------------
     # Inference methods to interact with vectorized simulation
     # environments
@@ -107,6 +113,7 @@ class ObjectNavAgent(Agent):
         end_recep_goal_category: torch.Tensor = None,
         nav_to_recep: torch.Tensor = None,
         camera_pose: torch.Tensor = None,
+        detection_results: Dict = None,
     ) -> Tuple[List[dict], List[dict]]:
         """Prepare low-level planner inputs from an observation - this is
         the main inference function of the agent that lets it interact with
@@ -177,6 +184,7 @@ class ObjectNavAgent(Agent):
             seq_start_recep_goal_category=start_recep_goal_category,
             seq_end_recep_goal_category=end_recep_goal_category,
             seq_nav_to_recep=nav_to_recep,
+            detection_results=[detection_results],
         )
 
         self.semantic_map.local_pose = seq_local_pose[:, -1]
@@ -281,6 +289,7 @@ class ObjectNavAgent(Agent):
             end_recep_goal_category,
             goal_name,
             camera_pose,
+            detection_results,
         ) = self._preprocess_obs(obs)
 
         # t1 = time.time()
@@ -295,6 +304,7 @@ class ObjectNavAgent(Agent):
             end_recep_goal_category=end_recep_goal_category,
             camera_pose=camera_pose,
             nav_to_recep=self.get_nav_to_recep(),
+            detection_results=detection_results,
         )
 
         # t2 = time.time()
@@ -335,16 +345,22 @@ class ObjectNavAgent(Agent):
             vis_inputs[0]["third_person_image"] = obs.third_person_image
             vis_inputs[0]["short_term_goal"] = None
             vis_inputs[0]["dilated_obstacle_map"] = dilated_obstacle_map
+            vis_inputs[0]["probabilistic_map"] = self.semantic_map.get_probability_map(0)
+
         info = {**planner_inputs[0], **vis_inputs[0]}
+        info["entropy"] = self.semantic_map.get_probability_map_entropy(0)
         return action, info
 
     def _preprocess_obs(self, obs: Observations):
         """Take a home-robot observation, preprocess it to put it into the correct format for the
-        semantic map."""
+        semantic map.
+        Note: obs is a single observation, not a batch of observations.
+        """
         rgb = torch.from_numpy(obs.rgb).to(self.device)
         depth = (
             torch.from_numpy(obs.depth).unsqueeze(-1).to(self.device) * 100.0
         )  # m to cm
+            
         semantic = np.full_like(obs.semantic, 4)
         obj_goal_idx, start_recep_idx, end_recep_idx = 1, 2, 3
         semantic[obs.semantic == obs.task_observations["object_goal"]] = obj_goal_idx
@@ -360,6 +376,11 @@ class ObjectNavAgent(Agent):
         obs_preprocessed = torch.cat([rgb, depth, semantic], dim=-1).unsqueeze(0)
         obs_preprocessed = obs_preprocessed.permute(0, 3, 1, 2)
 
+        detection_results = None
+        if self._use_probability_map:
+            detection_results = {'scores':torch.tensor(obs.task_observations['instance_scores']).unsqueeze(0),
+                                 'classes':torch.tensor(obs.task_observations['instance_classes']).unsqueeze(0),
+                                 'masks':torch.tensor(obs.task_observations['masks']).unsqueeze(0)}
         curr_pose = np.array([obs.gps[0], obs.gps[1], obs.compass[0]])
         pose_delta = torch.tensor(
             pu.get_rel_pose_change(curr_pose, self.last_poses[0])
@@ -402,4 +423,5 @@ class ObjectNavAgent(Agent):
             end_recep_goal_category,
             goal_name,
             camera_pose,
+            detection_results,
         )

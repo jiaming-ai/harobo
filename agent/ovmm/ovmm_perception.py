@@ -64,6 +64,7 @@ class OvmmPerception:
             custom_vocabulary=".",
             sem_gpu_id=gpu_device_id,
         )
+        self._use_probabilistic_mapping = config.AGENT.SEMANTIC_MAP.use_probability_map
 
     @property
     def current_vocabulary_id(self) -> int:
@@ -125,10 +126,17 @@ class OvmmPerception:
         """
         Run segmentation model and preprocess observations for OVMM skills
         """
-        obs = self._segmentation.predict(
+        ret = self._segmentation.predict(
             obs, depth_threshold=0.5, 
             draw_instance_predictions=self._use_detic_viz,
-            update_semanitc= not self.config.GROUND_TRUTH_SEMANTICS, # for development
         )
+        obs.task_observations["semantic_frame"] = ret["semantic_frame"]
+        obs.task_observations["instance_map"] = ret["instance_map"]
+        obs.task_observations["instance_classes"] = ret["instance_classes"]
+        obs.task_observations["instance_scores"] = ret["instance_scores"]
+        obs.task_observations["masks"] = ret["masks"]
+        if not self.config.GROUND_TRUTH_SEMANTICS:
+            obs['semantic'] = ret['semantic']
+
         self._process_obs(obs)
         return obs

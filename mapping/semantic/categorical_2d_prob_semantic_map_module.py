@@ -2,8 +2,8 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import Tuple, Optional, Dict, List
-from torch.nn.utils.rnn import pad_sequence
+from typing import Tuple, Optional
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,24 +18,13 @@ import home_robot.mapping.map_utils as mu
 import home_robot.utils.depth as du
 import home_robot.utils.pose as pu
 import home_robot.utils.rotation as ru
-from mapping.semantic.constants import MapConstants as MC
-from utils.visualization import (
-    display_grayscale,
-    display_rgb,
-    plot_image,
-    save_image, 
-    draw_top_down_map, 
-    Recording, 
-    visualize_gt,
-    visualize_pred,
-    save_img_tensor)
-
+from mapping.semantic.constants import ProbabilisticMapConstants as MC
 
 # For debugging input and output maps - shows matplotlib visuals
 debug_maps = False
 
 
-class Categorical2DSemanticMapModule(nn.Module):
+class Categorical2DProbabilisticSemanticMapModule(nn.Module):
     """
     This class is responsible for updating a dense 2D semantic map with one channel
     per object category, the local and global maps and poses, and generating
@@ -67,17 +56,13 @@ class Categorical2DSemanticMapModule(nn.Module):
         cat_pred_threshold: float,
         exp_pred_threshold: float,
         map_pred_threshold: float,
-        min_depth: float = 0.2,
-        max_depth: float = 5.0,
+        min_depth: float = 0.5,
+        max_depth: float = 3.5,
         must_explore_close: bool = False,
         min_obs_height_cm: int = 25,
         dilate_obstacles: bool = True,
         dilate_iter: int = 1,
         dilate_size: int = 3,
-        probabilistic: bool = False,
-        probability_prior: float = 0.2,
-        close_range: int = 150, # 1.5m
-        confident_threshold: float = 0.7,
     ):
         """
         Arguments:
@@ -150,20 +135,13 @@ class Categorical2DSemanticMapModule(nn.Module):
         self.dilate_kernel = np.ones((dilate_size, dilate_size))
         self.dilate_size = dilate_size
         self.dilate_iter = dilate_iter
-        
-        self.probabilistic = probabilistic
+
         # For probabilistic map updates
         self.dist_rows = torch.arange(1, self.vision_range + 1).float()
         self.dist_rows = self.dist_rows.unsqueeze(1).repeat(1, self.vision_range)
         self.dist_cols = torch.arange(1, self.vision_range + 1).float() - (self.vision_range / 2)
-        self.dist_cols = torch.abs(self.dist_cols)
         self.dist_cols = self.dist_cols.unsqueeze(0).repeat(self.vision_range, 1)
-
-        self.close_range = close_range // self.xy_resolution # 150 cm
-        self.confident_threshold = confident_threshold # above which considered a hard detection
-        self.prior_logit = torch.logit(torch.tensor(probability_prior)) # prior probability of objects
-        self.vr_matrix = torch.zeros((1, self.vision_range, self.vision_range))
-        self.prior_matrix = torch.full((1, self.vision_range, self.vision_range), self.prior_logit)
+        
 
     @torch.no_grad()
     def forward(
@@ -179,14 +157,14 @@ class Categorical2DSemanticMapModule(nn.Module):
         init_global_pose: Tensor,
         init_lmb: Tensor,
         init_origins: Tensor,
-        detection_results: Optional[List[Dict[str, Tensor]]] = None,
+        detection_results: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, IntTensor, Tensor]:
         """Update maps and poses with a sequence of observations and generate map
         features at each time step.
 
         Arguments:
             seq_obs: sequence of frames containing (RGB, depth, segmentation)
-             of shape (batch_size, sequence_length, 3 + 1 + num_sem_categories,
+             of shape (batch_size, sequence_length, 3 + 1 + num_detection_segments,
              frame_height, frame_width)
             seq_pose_delta: sequence of delta in pose since last frame of shape
              (batch_size, sequence_length, 3)
@@ -206,6 +184,9 @@ class Categorical2DSemanticMapModule(nn.Module):
              (batch_size, 3)
             init_lmb: initial local map boundaries of shape (batch_size, 4)
             init_origins: initial local map origins of shape (batch_size, 3)
+            detection_results: (optional) sequence of detection results of shape 
+                (batch_size, sequence_length, K, 2) where K is the number of detections,
+                and the last dimension is (c,s) where c is the class index and s is the score
 
         Returns:
             seq_map_features: sequence of semantic map features of shape
@@ -222,12 +203,12 @@ class Categorical2DSemanticMapModule(nn.Module):
              (batch_size, sequence_length, 4)
             seq_origins: sequence of local map origins of shape
              (batch_size, sequence_length, 3)
-            detection_results: list of detection results of length sequence_length
         """
         batch_size, sequence_length = seq_obs.shape[:2]
         device, dtype = seq_obs.device, seq_obs.dtype
-        detection_results = detection_results or [None] * sequence_length
-        
+
+        # TODO: current pose is not needed if we always center the agent in the local map
+        # and explored map and visited map seem redundant
         map_features_channels = 2 * MC.NON_SEM_CHANNELS + self.num_sem_categories
         seq_map_features = torch.zeros(
             batch_size,
@@ -269,7 +250,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                 local_map,
                 local_pose,
                 seq_camera_poses,
-                detection_results[t],
+                detection_results[:, t] if detection_results is not None else None,
             )
             for e in range(batch_size):
                 if seq_update_global[e, t]:
@@ -300,14 +281,14 @@ class Categorical2DSemanticMapModule(nn.Module):
         prev_map: Tensor,
         prev_pose: Tensor,
         camera_pose: Tensor,
-        detection_result: Optional[Dict[str, Tensor]] = None,
+        detection_results: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Update local map and sensor pose given a new observation using parameter-free
         differentiable projective geometry.
 
         Args:
             obs: current frame containing (rgb, depth, segmentation) of shape
-             (batch_size, 3 + 1 + num_sem_categories, frame_height, frame_width)
+             (batch_size, 3 + 1 + detection_seg_num, frame_height, frame_width)
             pose_delta: delta in pose since last frame of shape (batch_size, 3)
             prev_map: previous local map of shape
              (batch_size, MC.NON_SEM_CHANNELS + num_sem_categories, M, M)
@@ -392,14 +373,9 @@ class Categorical2DSemanticMapModule(nn.Module):
                 orig=np.zeros(3),
             )
 
-        masks = detection_result["masks"].float()
-        if masks.shape[1] == 0: # no detection results
-            num_instance = 0
-        else:
-            _, num_instance, _,_ = masks.size()
-        
+        num_segments = obs_channels - 4
+        voxel_channels = 1 + num_segments
 
-        voxel_channels = 1 + num_instance
         init_grid = torch.zeros(
             batch_size,
             voxel_channels,
@@ -416,10 +392,9 @@ class Categorical2DSemanticMapModule(nn.Module):
             device=device,
             dtype=torch.float32,
         )
-        if num_instance > 0:
-            feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(masks).view(
-                batch_size, num_instance, h // self.du_scale * w // self.du_scale
-            )
+        feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(obs[:, 4:, :, :]).view(
+            batch_size, obs_channels - 4, h // self.du_scale * w // self.du_scale
+        )
 
         XYZ_cm_std = point_cloud_map_coords.float()
         XYZ_cm_std[..., :2] = XYZ_cm_std[..., :2] / self.xy_resolution
@@ -443,100 +418,25 @@ class Categorical2DSemanticMapModule(nn.Module):
         )
 
         voxels = du.splat_feat_nd(init_grid, feat, XYZ_cm_std).transpose(2, 3)
-        voxels_sum = voxels.sum(4)
         agent_height_proj = voxels[
             ..., self.min_mapped_height : self.max_mapped_height
         ].sum(4)
-        all_height_proj = voxels_sum
+        all_height_proj = voxels.sum(4)
 
-        # TODO filter out voxels that are lower than the threshold
-        # this is based on the assumption that the object should not be on the ground
-        instance_projection = voxels[:, 1:, :, :,
-             self.min_mapped_height + 4 : self.max_mapped_height
-        ].sum(4) # [B, total_num_instance, H, W]
+        ######## We need to map detection results to probabilities here ########
+        
 
-     
+        # get the centroids of each segment
+        centroids_x = all_height_proj * self.dist_rows
+
+        ######## end ########
+
+        
+
         fp_map_pred = agent_height_proj[:, 0:1, :, :]
         fp_exp_pred = all_height_proj[:, 0:1, :, :]
         fp_map_pred = fp_map_pred / self.map_pred_threshold
         fp_exp_pred = fp_exp_pred / self.exp_pred_threshold
-
-        close_exp = fp_exp_pred.clone() # [B, 1, H, W]
-        close_exp[:,:, self.close_range:,:] = 0 # only consider the close range 1.5m
-        
-        ################ probabilitic ################
-        ### We need to pad the instances to the same size
-        probs = torch.zeros([batch_size, 
-                                self.num_sem_categories,
-                                self.vision_range,
-                                self.vision_range], 
-                                dtype=torch.float32,
-                                device=device)
-        scores = detection_result["scores"] # [B, total_num_instance]
-        classes = detection_result["classes"] # [B, total_num_instance]
-        for c in [1,2,3]: # obj, rec, goal_rec
-            idx_b, idx_c = torch.where(classes==c) 
-            if len(idx_b) == 0: # no detection for all batches
-                continue
-
-            # combine the instances from the same class by taking the max
-            instances_list = instance_projection[[idx_b, idx_c]].clamp(0,1) # [c_total_num_instance, H, W]
-            instances_list *= scores[[idx_b, idx_c]].unsqueeze(-1).unsqueeze(-1) # [c_total_num_instance, H, W]
-            idx_b_list = idx_b.tolist()
-            part_sizes = [idx_b_list.count(i) for i in range(batch_size)]
-
-            instances_list = torch.split(instances_list, part_sizes, dim=0)
-            instances_tensor = pad_sequence(instances_list, batch_first=True) # [B, c_num_instance, H, W]
-            combined, _ = torch.max(instances_tensor, dim=1)   # [B, H, W]
-
-            probs[:, c, :, :] = combined
-
-        # assign hard detection results
-        detected = probs > self.confident_threshold
-
-        relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
-        prob_map = torch.einsum('bchw,c->bhw',probs,relevance) # [B, H, W]
-
-        # we only reduce the probablities for the close range that is viewable by the agent
-        # prior_matrix = self.prior_matrix.repeat(batch_size, 1, 1) # [B, H, W]
-        # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
-
-        # TODO: should we use close_range or exp, or just all viewable area?
-        # we can use a smaller prior for all viewable area, and bigger prior for close range
-        prob_logit = torch.logit(prob_map,eps=1e-6) - self.prior_logit # 
-        prob_logit[fp_exp_pred.squeeze(1) == 0] = 0 # set unviewable area to 0
-        prob_logit = torch.clamp(prob_logit, min=-10, max=10)        
-
-
-        # # compute centroids
-        # proj_instance = voxels_sum[:, 1+self.num_sem_categories:, :, :] > 0 # [B, num_masks, H, W]
-        # has_object = proj_instance.sum([2,3]) > 0 # [B, num_masks]
-        
-        # centroids_x = proj_instance * self.dist_cols.to(device)
-        # centroids_y = proj_instance * self.dist_rows.to(device)
-        # centroids_x = centroids_x.sum([2,3]) / proj_instance.sum([2,3]) # [B, num_masks]
-        # centroids_y = centroids_y.sum([2,3]) / proj_instance.sum([2,3]) # [B, num_masks]
-        # dist = (centroids_x ** 2 + centroids_y ** 2)**0.5 # [B, num_masks]
-        # theta = torch.atan2(centroids_x, centroids_y) # [B, num_masks]
-        # scores = detection_result["scores"] # [B, num_masks]
-        # classes = detection_result["classes"] # [B, num_masks]
-        
-        # not_confident = scores < 0.5
-        # is_close = dist < 50 # [B, num_masks] 2.5m
-        # is_side = theta > 0.5 # [B, num_masks] 30 degrees
-        # alpha = torch.ones_like(scores)
-        # alpha[not_confident & is_close] *= 0.5
-        # alpha[not_confident & is_side] *= 0.5
-        # alpha[classes == 2] *= 0.5 # receptacle
-        # alpha[classes >= 3] = 0 # goal receptacle
-        
-        # proj_instance = proj_instance * alpha.unsqueeze(2).unsqueeze(3) * scores.unsqueeze(2).unsqueeze(3)
-        
-
-        # confident_instance = scores > 0.7 # [B, num_masks]
-            
-        ############### end probabilistic ###############
-
 
         agent_view = torch.zeros(
             batch_size,
@@ -572,18 +472,15 @@ class Categorical2DSemanticMapModule(nn.Module):
         y2 = y1 + self.vision_range
         agent_view[:, MC.OBSTACLE_MAP : MC.OBSTACLE_MAP + 1, y1:y2, x1:x2] = fp_map_pred
         agent_view[:, MC.EXPLORED_MAP : MC.EXPLORED_MAP + 1, y1:y2, x1:x2] = fp_exp_pred
-        agent_view[:, MC.BEEN_CLOSE_MAP : MC.BEEN_CLOSE_MAP + 1, y1:y2, x1:x2] = close_exp
-        agent_view[:, MC.PROBABILITY_MAP , y1:y2, x1:x2] = prob_logit
         agent_view[
             :,
             MC.NON_SEM_CHANNELS : MC.NON_SEM_CHANNELS + self.num_sem_categories,
             y1:y2,
             x1:x2,
         ] = (
-            detected
+            all_height_proj[:, 1 : 1 + self.num_sem_categories]
             / self.cat_pred_threshold
         )
-
 
         current_pose = pu.get_new_pose_batch(prev_pose.clone(), pose_delta)
         st_pose = current_pose.clone().detach()
@@ -602,25 +499,14 @@ class Categorical2DSemanticMapModule(nn.Module):
         translated = F.grid_sample(rotated, trans_mat, align_corners=True)
 
         # Clamp to [0, 1] after transform agent view to map coordinates
-        idx_no_prob = list(range(0,MC.PROBABILITY_MAP)) + \
-                    list(range(MC.PROBABILITY_MAP+1,MC.NON_SEM_CHANNELS+self.num_sem_categories))
-        translated[:,idx_no_prob] = torch.clamp(translated[:,idx_no_prob], min=0.0, max=1.0)
+        translated = torch.clamp(translated, min=0.0, max=1.0)
 
         maps = torch.cat((prev_map.unsqueeze(1), translated.unsqueeze(1)), 1)
         current_map, _ = torch.max(
             maps[:, :, : MC.NON_SEM_CHANNELS + self.num_sem_categories], 1
         )
 
-        ############### Bayesian update ###############
-        current_map[:, MC.PROBABILITY_MAP, :, :] = torch.sum(maps[:, :, MC.PROBABILITY_MAP,:, :], 1)
-        current_map[:, MC.PROBABILITY_MAP, :, :] = torch.clamp(current_map[:, MC.PROBABILITY_MAP, :, :], min=-10, max=10)
-        goal_idx = 7
-        confident_no_obj = (current_map[:, MC.BEEN_CLOSE_MAP] == 1) & (current_map[:, goal_idx] < self.confident_threshold)
-        current_map[:, MC.PROBABILITY_MAP][confident_no_obj] = -10 
-
-        ############### end Bayesian update ###############
         # Reset current location
-        # TODO: it is always in the center, do we need it?
         current_map[:, MC.CURRENT_LOCATION, :, :].fill_(0.0)
         curr_loc = current_pose[:, :2]
         curr_loc = (curr_loc * 100.0 / self.xy_resolution).int()
@@ -636,27 +522,26 @@ class Categorical2DSemanticMapModule(nn.Module):
 
             # Set a disk around the agent to explored
             # This is around the current agent - we just sort of assume we know where we are
-            # TODO being close to should be in the agent's camera frustum and within a certain distance
-            # try:
-            #     radius = 10
-            #     explored_disk = torch.from_numpy(skimage.morphology.disk(radius))
-            #     current_map[
-            #         e,
-            #         MC.EXPLORED_MAP,
-            #         y - radius : y + radius + 1,
-            #         x - radius : x + radius + 1,
-            #     ][explored_disk == 1] = 1
-            #     # Record the region the agent has been close to using a disc centered at the agent
-            #     radius = self.been_close_to_radius // self.resolution
-            #     been_close_disk = torch.from_numpy(skimage.morphology.disk(radius))
-            #     current_map[
-            #         e,
-            #         MC.BEEN_CLOSE_MAP,
-            #         y - radius : y + radius + 1,
-            #         x - radius : x + radius + 1,
-            #     ][been_close_disk == 1] = 1
-            # except IndexError:
-            #     pass
+            try:
+                radius = 10
+                explored_disk = torch.from_numpy(skimage.morphology.disk(radius))
+                current_map[
+                    e,
+                    MC.EXPLORED_MAP,
+                    y - radius : y + radius + 1,
+                    x - radius : x + radius + 1,
+                ][explored_disk == 1] = 1
+                # Record the region the agent has been close to using a disc centered at the agent
+                radius = self.been_close_to_radius // self.resolution
+                been_close_disk = torch.from_numpy(skimage.morphology.disk(radius))
+                current_map[
+                    e,
+                    MC.BEEN_CLOSE_MAP,
+                    y - radius : y + radius + 1,
+                    x - radius : x + radius + 1,
+                ][been_close_disk == 1] = 1
+            except IndexError:
+                pass
 
         if debug_maps:
             current_map = current_map.cpu()
@@ -707,13 +592,13 @@ class Categorical2DSemanticMapModule(nn.Module):
             print("map shape =", current_map.shape)
             breakpoint()
 
-        # if self.must_explore_close:
-        #     current_map[:, MC.EXPLORED_MAP] = (
-        #         current_map[:, MC.EXPLORED_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
-        #     )
-        #     current_map[:, MC.OBSTACLE_MAP] = (
-        #         current_map[:, MC.OBSTACLE_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
-        #     )
+        if self.must_explore_close:
+            current_map[:, MC.EXPLORED_MAP] = (
+                current_map[:, MC.EXPLORED_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
+            )
+            current_map[:, MC.OBSTACLE_MAP] = (
+                current_map[:, MC.OBSTACLE_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
+            )
 
         return current_map, current_pose
 

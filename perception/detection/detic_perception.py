@@ -215,7 +215,6 @@ class DeticPerception(PerceptionModule):
         obs: Observations,
         depth_threshold: Optional[float] = None,
         draw_instance_predictions: bool = True,
-        update_semanitc: bool = True,
     ) -> Observations:
         """
         Arguments:
@@ -229,12 +228,14 @@ class DeticPerception(PerceptionModule):
             obs.task_observations["semantic_frame"]: segmentation visualization
              image of shape (H, W, 3)
         """
+        # TODO support batch inference
         image = cv2.cvtColor(obs.rgb, cv2.COLOR_RGB2BGR)
         depth = obs.depth
         height, width, _ = image.shape
 
         pred = self.predictor(image)
 
+        ret = {}
         if draw_instance_predictions:
             visualizer = Visualizer(
                 image[:, :, ::-1], self.metadata, instance_mode=self.instance_mode
@@ -242,24 +243,26 @@ class DeticPerception(PerceptionModule):
             visualization = visualizer.draw_instance_predictions(
                 predictions=pred["instances"].to(self.cpu_device)
             ).get_image()
-            obs.task_observations["semantic_frame"] = visualization
+            ret["semantic_frame"] = visualization
         else:
-            obs.task_observations["semantic_frame"] = None
+            ret["semantic_frame"] = None
 
         #### DEVELOPING ####
         # draw objectiveness boxes
-        proposals = pred["proposals"]
-        proposal_scores = proposals.scores.cpu().numpy()
-        proposal_boxes = proposals.pred_boxes.tensor.cpu().numpy()
-        # proposal_boxes = proposal_boxes[proposal_scores > 0.4]
-        visualizer = Visualizer(
-                image[:, :, ::-1], self.metadata, instance_mode=self.instance_mode
-            )
-        for i in range(len(proposal_boxes)):
-            visualizer.draw_box(
-                box_coord=proposal_boxes[i]
-            )
-        objectiveness_visualization = visualizer.get_output().get_image()
+        if "proposals" in pred:
+            proposals = pred["proposals"]
+            proposal_scores = proposals.scores.cpu().numpy()
+            proposal_boxes = proposals.pred_boxes.tensor.cpu().numpy()
+            # proposal_boxes = proposal_boxes[proposal_scores > 0.4]
+            visualizer = Visualizer(
+                    image[:, :, ::-1], self.metadata, instance_mode=self.instance_mode
+                )
+            for i in range(len(proposal_boxes)):
+                visualizer.draw_box(
+                    box_coord=proposal_boxes[i]
+                )
+            objectiveness_visualization = visualizer.get_output().get_image()
+            ret["objectiveness_visualization"] = objectiveness_visualization
 
         # Sort instances by mask size
         masks = pred["instances"].pred_masks.cpu().numpy()
@@ -273,15 +276,13 @@ class DeticPerception(PerceptionModule):
 
         semantic_map, instance_map = overlay_masks(masks, class_idcs, (height, width))
 
-        if update_semanitc:
-            obs.semantic = semantic_map.astype(int)
-        
-        obs.task_observations["instance_map"] = instance_map
-        obs.task_observations["instance_classes"] = class_idcs
-        obs.task_observations["instance_scores"] = scores
-        obs.task_observations["objectiveness_visualization"] = objectiveness_visualization
+        ret['semantic'] = semantic_map.astype(int)
+        ret["masks"] = masks
+        ret["instance_map"] = instance_map
+        ret["instance_classes"] = class_idcs
+        ret["instance_scores"] = scores
 
-        return obs
+        return ret
 
     
 
@@ -300,6 +301,7 @@ def setup_cfg(args):
     cfg.MODEL.PANOPTIC_FPN.COMBINE.INSTANCES_CONFIDENCE_THRESH = (
         args.confidence_threshold
     )
+    cfg.MODEL.RETURN_PROPOSALS = args.return_proposals
     print("[DETIC] Confidence threshold =", args.confidence_threshold)
     cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH = "rand"  # load later
     if not args.pred_all_class:
@@ -357,5 +359,10 @@ def get_parser():
         help="Modify config options using the command-line 'KEY VALUE' pairs",
         default=[],
         nargs=argparse.REMAINDER,
+    )
+    parser.add_argument(
+        "--return_proposals",
+        action="store_true",
+        default=False,
     )
     return parser

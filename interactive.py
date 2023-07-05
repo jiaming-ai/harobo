@@ -21,7 +21,7 @@ sys.path.insert(
     0,
     HOME_ROBOT_BASE_DIR + "src/home_robot_sim"
 )
-
+import cv2
 from habitat import make_dataset
 from habitat.core.environments import get_env_class
 from habitat.core.vector_env import VectorEnv
@@ -206,23 +206,54 @@ class InteractiveEvaluator():
         
         agent.reset_vectorized([self.env.current_episode()])
         agent_info = None
+        print('*'*20)
         print(f'Goal: {ob.task_observations["goal_name"]}')
+        pre_entropy = 0
         for ep_idx in range(env.number_of_episodes):
             current_episodes_info = [self.env.current_episode()]
             action, agent_info, _ = agent.act(ob)
-
+            print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
+            pre_entropy = agent_info["entropy"]
+            
             if not self.args.no_render:
-                # ob = detic_perception(ob)
 
-                gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
-                draw_ob = np.concatenate([ob.rgb,gt_semantic], axis=1)
-                # if agent_info is not None:
-                #     draw_ob = self.env.visualizer.visualize(**agent_info)
+                draw_ob = ob.rgb
+
+                # # visualize GT semantic map
+                # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
+                # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
+
+                #  visualize detected instances
                 if 'semantic_frame' in ob.task_observations:
                     draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
                 
-                if 'objectiveness_visualization' in ob.task_observations:
-                    draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
+                # # visualize objectness
+                # if 'objectiveness_visualization' in ob.task_observations:
+                #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
+                
+                # visualize semantic map
+                vis = env.visualizer.visualize(**agent_info)
+                semantic_map_vis = vis['semantic_map']
+                semantic_map_vis = cv2.resize(
+                    semantic_map_vis,
+                    (640, 640),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
+
+                # visualize probabilistic map
+                prob_map = agent_info['probabilistic_map']
+                prob_map = np.flipud(prob_map)
+                prob_map = cv2.resize(
+                    prob_map,
+                    (640, 640),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                prob_map = (prob_map * 255).astype(np.uint8)
+                prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
+                draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
+
+                # draw
                 user_action = self.viewer.imshow(
                     draw_ob, delay=0 if self.args.interactive else 2
                 )
@@ -241,6 +272,7 @@ class InteractiveEvaluator():
                 agent.reset_vectorized_for_env(
                     0, self.env.current_episode()
                 )
+                print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')
 
         env.close()
