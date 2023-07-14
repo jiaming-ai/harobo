@@ -17,9 +17,40 @@ from mapping.semantic.categorical_2d_semantic_map_state import (
 )
 
 from navigation_planner.discrete_planner import DiscretePlanner
+import home_robot.utils.depth as du
+from home_robot.utils import rotation as ru
 
 from .objectnav_agent_module import ObjectNavAgentModule
 
+from pytorch3d.structures import Pointclouds
+from pytorch3d.vis.plotly_vis import AxisArgs, plot_batch_individually, plot_scene
+from pytorch3d.renderer import (
+    look_at_view_transform,
+    FoVOrthographicCameras, 
+    PointsRasterizationSettings,
+    PointsRenderer,
+    PulsarPointsRenderer,
+    PointsRasterizer,
+    AlphaCompositor,
+    NormWeightedCompositor
+)
+from pytorch3d.ops import sample_farthest_points
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+from utils.visualization import (
+    display_grayscale,
+    display_rgb,
+    plot_image,
+    save_image, 
+    draw_top_down_map, 
+    Recording, 
+    visualize_gt,
+    visualize_pred,
+    save_img_tensor)
+from .points_utils import show_points, rasterize_pc
+from .points_manager import PointCloudManager
 # For visualizing exploration issues
 debug_frontier_map = False
 
@@ -96,6 +127,9 @@ class ObjectNavAgent(Agent):
 
         self._use_probability_map = config.AGENT.SEMANTIC_MAP.use_probability_map
         self.probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior
+
+        self.pointcloud = PointCloudManager(config)
+        self.show_point = False
     # ------------------------------------------------------------------
     # Inference methods to interact with vectorized simulation
     # environments
@@ -112,6 +146,7 @@ class ObjectNavAgent(Agent):
         nav_to_recep: torch.Tensor = None,
         camera_pose: torch.Tensor = None,
         detection_results: Dict = None,
+        raw_obs: Observations = None,
     ) -> Tuple[List[dict], List[dict]]:
         """Prepare low-level planner inputs from an observation - this is
         the main inference function of the agent that lets it interact with
@@ -166,6 +201,7 @@ class ObjectNavAgent(Agent):
             seq_global_pose,
             seq_lmb,
             seq_origins,
+            seq_pointcloud,
         ) = self.module(
             obs.unsqueeze(1),
             pose_delta.unsqueeze(1),
@@ -228,6 +264,37 @@ class ObjectNavAgent(Agent):
             }
             for e in range(self.num_environments)
         ]
+
+        ################# pointcloud #################
+        xyz = seq_pointcloud[:, -1] / 100 # in agent base frame [N, P, 3]
+        cur_pose = np.concatenate([raw_obs.gps, raw_obs.compass])
+
+        
+
+
+
+    #     xyz_global = du.transform_pose_t(
+    #         xyz, cur_pose , xyz.device
+    #     )
+
+    #     if self.downsample_pc_k > 0:
+    #         xyz_global, _ = sample_farthest_points(xyz_global, K=self.downsample_pc_k)
+ 
+
+    #     if self.pointcloud is None:
+    #         self.pointcloud = xyz_global
+    #     else:
+    #         self.pointcloud = torch.cat([self.pointcloud, xyz_global], dim=1) # [N, P, 3]
+        
+        self.pointcloud.add_points(points=xyz, agent_pose=cur_pose)
+
+        if self.show_point:
+            self.pointcloud.visualize()
+    
+            self.pointcloud.rasterize(camera_pose=raw_obs.camera_pose,
+                                    agent_pose=cur_pose,
+                                    lmb=self.semantic_map.lmb)
+        ################# end pointcloud #################
         if self.visualize:
             vis_inputs = [
                 {
@@ -303,6 +370,7 @@ class ObjectNavAgent(Agent):
             camera_pose=camera_pose,
             nav_to_recep=self.get_nav_to_recep(),
             detection_results=detection_results,
+            raw_obs=obs,
         )
 
         # t2 = time.time()

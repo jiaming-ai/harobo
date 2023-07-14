@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from agent.obj_nav.objectnav_agent import ObjectNavAgent
+from agent.obj_nav_ura.objectnav_agent import ObjectNavAgent
 
 from agent.ovmm.ppo_agent import PPOAgent
 from home_robot.core.interfaces import DiscreteNavigationAction, Observations
@@ -42,7 +42,7 @@ def get_skill_as_one_hot_dict(curr_skill: Skill):
     return skill_dict
 
 
-class URAgent(ObjectNavAgent):
+class OVMMAgent(ObjectNavAgent):
     """Uncertainty Reduction Agent (UR) for ObjectNav task."""
 
     def __init__(self, config, device_id: int = 0, obs_spaces=None, action_spaces=None):

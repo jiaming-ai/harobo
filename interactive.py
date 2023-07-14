@@ -9,7 +9,7 @@ from enum import IntEnum, auto
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
-from agent.ovmm.ura import URAgent
+from agent.ovmm.ovmm import OVMMAgent
 
 HOME_ROBOT_BASE_DIR = str(Path(__file__).resolve().parent.parent / "home-robot") + "/"
 
@@ -138,7 +138,7 @@ class InteractiveEvaluator():
     def eval(self, num_episodes_per_env=10):
      
         self.env = create_ovmm_env_fn(self.config)
-        agent = URAgent(
+        agent = OVMMAgent(
             config=self.config,
             device_id=self.gpu_id,
             obs_spaces=self.env.observation_space,
@@ -187,7 +187,7 @@ class InteractiveEvaluator():
 
     def play(
         self,
-        agent: URAgent,
+        agent: OVMMAgent,
         env: HabitatOpenVocabManipEnv,
         num_episodes_per_env=None,
         episode_keys=None,
@@ -211,6 +211,7 @@ class InteractiveEvaluator():
         pre_entropy = 0
         for ep_idx in range(env.number_of_episodes):
             current_episodes_info = [self.env.current_episode()]
+            print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             action, agent_info, _ = agent.act(ob)
             print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
             pre_entropy = agent_info["entropy"]

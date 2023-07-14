@@ -47,9 +47,9 @@ AGENT:
     dilate_size: 3
     dilate_iter: 1
     use_probability_map: True
-    probability_prior: 0.1
+    probability_prior: 0.15
     confident_threshold: 0.6 # confidence threshold for the probability map
-    close_range: 150 # in cm, within which the agent is considered to be close to the object
+    close_range: 250 # in cm, within which the agent is considered to be close to the object
 
   SKILLS:
     GAZE_OBJ:

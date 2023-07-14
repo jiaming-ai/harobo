@@ -9,7 +9,22 @@ from mapping.semantic.categorical_2d_semantic_map_module import (
 from navigation_policy.object_navigation.objectnav_frontier_exploration_policy import (
     ObjectNavFrontierExplorationPolicy,
 )
-
+from pytorch3d.structures import Pointclouds
+from pytorch3d.vis.plotly_vis import AxisArgs, plot_batch_individually, plot_scene
+from pytorch3d.renderer import (
+    look_at_view_transform,
+    FoVOrthographicCameras, 
+    PointsRasterizationSettings,
+    PointsRenderer,
+    PulsarPointsRenderer,
+    PointsRasterizer,
+    AlphaCompositor,
+    NormWeightedCompositor
+)
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
 
 # Do we need to visualize the frontier as we explore?
 debug_frontier_map = False

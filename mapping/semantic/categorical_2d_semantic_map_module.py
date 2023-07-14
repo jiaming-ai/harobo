@@ -52,6 +52,7 @@ class Categorical2DSemanticMapModule(nn.Module):
 
     def __init__(
         self,
+        # config,
         frame_height: int,
         frame_width: int,
         camera_height: int,
@@ -106,6 +107,33 @@ class Categorical2DSemanticMapModule(nn.Module):
             min_obs_height_cm: minimum height of obstacles (in centimetres)
         """
         super().__init__()
+
+        # frame_height=config.ENVIRONMENT.frame_height,
+        # frame_width=config.ENVIRONMENT.frame_width,
+        # camera_height=config.ENVIRONMENT.camera_height,
+        # hfov=config.ENVIRONMENT.hfov,
+        # num_sem_categories=config.AGENT.SEMANTIC_MAP.num_sem_categories,
+        # map_size_cm=config.AGENT.SEMANTIC_MAP.map_size_cm,
+        # map_resolution=config.AGENT.SEMANTIC_MAP.map_resolution,
+        # vision_range=config.AGENT.SEMANTIC_MAP.vision_range,
+        # min_depth=config.ENVIRONMENT.min_depth,
+        # max_depth=config.ENVIRONMENT.max_depth,
+        # explored_radius=config.AGENT.SEMANTIC_MAP.explored_radius,
+        # been_close_to_radius=config.AGENT.SEMANTIC_MAP.been_close_to_radius,
+        # global_downscaling=config.AGENT.SEMANTIC_MAP.global_downscaling,
+        # du_scale=config.AGENT.SEMANTIC_MAP.du_scale,
+        # cat_pred_threshold=config.AGENT.SEMANTIC_MAP.cat_pred_threshold,
+        # exp_pred_threshold=config.AGENT.SEMANTIC_MAP.exp_pred_threshold,
+        # map_pred_threshold=config.AGENT.SEMANTIC_MAP.map_pred_threshold,
+        # must_explore_close=config.AGENT.SEMANTIC_MAP.must_explore_close,
+        # min_obs_height_cm=config.AGENT.SEMANTIC_MAP.min_obs_height_cm,
+        # dilate_obstacles=config.AGENT.SEMANTIC_MAP.dilate_obstacles,
+        # dilate_size=config.AGENT.SEMANTIC_MAP.dilate_size,
+        # dilate_iter=config.AGENT.SEMANTIC_MAP.dilate_iter,
+        # probabilistic=config.AGENT.SEMANTIC_MAP.use_probability_map,
+        # probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior,
+        # close_range=config.AGENT.SEMANTIC_MAP.close_range,
+        # confident_threshold=config.AGENT.SEMANTIC_MAP.confident_threshold,
 
         self.screen_h = frame_height
         self.screen_w = frame_width
@@ -238,6 +266,16 @@ class Categorical2DSemanticMapModule(nn.Module):
             device=device,
             dtype=dtype,
         )
+        n_points = self.screen_h // self.du_scale * self.screen_w // self.du_scale
+        # n_points = self.screen_h  * self.screen_w 
+        seq_point_clouds = torch.zeros(
+            batch_size,
+            sequence_length,
+            n_points,
+            3,
+            device=device,
+            dtype=dtype,
+        )
         seq_local_pose = torch.zeros(batch_size, sequence_length, 3, device=device)
         seq_global_pose = torch.zeros(batch_size, sequence_length, 3, device=device)
         seq_lmb = torch.zeros(
@@ -263,7 +301,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                         self.map_size_parameters,
                     )
 
-            local_map, local_pose = self._update_local_map_and_pose(
+            local_map, local_pose, local_pc = self._update_local_map_and_pose(
                 seq_obs[:, t],
                 seq_pose_delta[:, t],
                 local_map,
@@ -282,6 +320,7 @@ class Categorical2DSemanticMapModule(nn.Module):
             seq_lmb[:, t] = lmb
             seq_origins[:, t] = origins
             seq_map_features[:, t] = self._get_map_features(local_map, global_map)
+            seq_point_clouds[:, t] = local_pc
 
         return (
             seq_map_features,
@@ -291,6 +330,7 @@ class Categorical2DSemanticMapModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
+            seq_point_clouds,
         )
 
     def _update_local_map_and_pose(
@@ -379,6 +419,27 @@ class Categorical2DSemanticMapModule(nn.Module):
                 orig=np.zeros(3),
             )
 
+        #################### pointclouds ####################
+        
+        xyz = point_cloud_base_coords.clone().reshape(batch_size,-1, 3)
+
+        # we use the detection score as feat for point cloud
+        # we assume total_num_instance is the same for all batch (padded with 0)
+        scores = detection_result["scores"] # [B, total_num_instance]
+        classes = detection_result["classes"] # [B, total_num_instance]
+        masks = detection_result["masks"].float() # [B, total_num_instance, H, W]
+        relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
+
+        if masks.shape[1] == 0: # no instance detected
+            prob_feat = torch.zeros(batch_size, h // self.du_scale * w // self.du_scale).to(device)
+        else:
+            score_relevence = scores * relevance[classes] # [B, total_num_instance]
+            prob_feat = torch.einsum('bnhw,bn->bhw',masks, score_relevence) # [B, H, W]
+            prob_feat = nn.AvgPool2d(self.du_scale)(prob_feat).view(
+                    batch_size, h // self.du_scale * w // self.du_scale
+                ) # [B, H*W] after scaling
+        #################### pointclouds ####################
+
         point_cloud_map_coords = du.transform_pose_t(
             point_cloud_base_coords, self.shift_loc, device
         )
@@ -391,8 +452,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                 (rgb / 255.0).cpu().numpy(),
                 orig=np.zeros(3),
             )
-
-        masks = detection_result["masks"].float()
+       
         if masks.shape[1] == 0: # no detection results
             num_instance = 0
         else:
@@ -472,8 +532,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                                 self.vision_range], 
                                 dtype=torch.float32,
                                 device=device)
-        scores = detection_result["scores"] # [B, total_num_instance]
-        classes = detection_result["classes"] # [B, total_num_instance]
+        
         for c in [1,2,3]: # obj, rec, goal_rec
             idx_b, idx_c = torch.where(classes==c) 
             if len(idx_b) == 0: # no detection for all batches
@@ -494,7 +553,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         # assign hard detection results
         detected = probs > self.confident_threshold
 
-        relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
+        # relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
         prob_map = torch.einsum('bchw,c->bhw',probs,relevance) # [B, H, W]
 
         # we only reduce the probablities for the close range that is viewable by the agent
@@ -715,7 +774,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         #         current_map[:, MC.OBSTACLE_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
         #     )
 
-        return current_map, current_pose
+        return current_map, current_pose, xyz
 
     def _update_global_map_and_pose_for_env(
         self,
