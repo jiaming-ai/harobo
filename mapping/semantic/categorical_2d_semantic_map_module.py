@@ -15,7 +15,8 @@ from torch import IntTensor, Tensor
 from torch.nn import functional as F
 
 import home_robot.mapping.map_utils as mu
-import home_robot.utils.depth as du
+from utils.geometry import depth as du
+from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel
 import home_robot.utils.pose as pu
 import home_robot.utils.rotation as ru
 from mapping.semantic.constants import MapConstants as MC
@@ -71,7 +72,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         min_depth: float = 0.2,
         max_depth: float = 5.0,
         must_explore_close: bool = False,
-        min_obs_height_cm: int = 25,
+        min_obs_height_cm: int = 0,
         dilate_obstacles: bool = True,
         dilate_iter: int = 1,
         dilate_size: int = 3,
@@ -175,9 +176,9 @@ class Categorical2DSemanticMapModule(nn.Module):
 
         # For cleaning up maps
         self.dilate_obstacles = dilate_obstacles
-        self.dilate_kernel = np.ones((dilate_size, dilate_size))
+        # self.dilate_kernel = np.ones((dilate_size, dilate_size))
         self.dilate_size = dilate_size
-        self.dilate_iter = dilate_iter
+        # self.dilate_iter = dilate_iter
         
         self.probabilistic = probabilistic
         # For probabilistic map updates
@@ -192,6 +193,8 @@ class Categorical2DSemanticMapModule(nn.Module):
         self.prior_logit = torch.logit(torch.tensor(probability_prior)) # prior probability of objects
         self.vr_matrix = torch.zeros((1, self.vision_range, self.vision_range))
         self.prior_matrix = torch.full((1, self.vision_range, self.vision_range), self.prior_logit)
+
+        self.dialate_kernel = torch.ones((1, 1, dilate_size, dilate_size), dtype=torch.float32)
 
     @torch.no_grad()
     def forward(
@@ -266,16 +269,16 @@ class Categorical2DSemanticMapModule(nn.Module):
             device=device,
             dtype=dtype,
         )
-        n_points = self.screen_h // self.du_scale * self.screen_w // self.du_scale
-        # n_points = self.screen_h  * self.screen_w 
-        seq_point_clouds = torch.zeros(
-            batch_size,
-            sequence_length,
-            n_points,
-            3,
-            device=device,
-            dtype=dtype,
-        )
+        # n_points = self.screen_h // self.du_scale * self.screen_w // self.du_scale
+        # # n_points = self.screen_h  * self.screen_w 
+        # seq_point_clouds = torch.zeros(
+        #     batch_size,
+        #     sequence_length,
+        #     n_points,
+        #     3,
+        #     device=device,
+        #     dtype=dtype,
+        # )
         seq_local_pose = torch.zeros(batch_size, sequence_length, 3, device=device)
         seq_global_pose = torch.zeros(batch_size, sequence_length, 3, device=device)
         seq_lmb = torch.zeros(
@@ -301,7 +304,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                         self.map_size_parameters,
                     )
 
-            local_map, local_pose, local_pc = self._update_local_map_and_pose(
+            local_map, local_pose = self._update_local_map_and_pose(
                 seq_obs[:, t],
                 seq_pose_delta[:, t],
                 local_map,
@@ -320,7 +323,6 @@ class Categorical2DSemanticMapModule(nn.Module):
             seq_lmb[:, t] = lmb
             seq_origins[:, t] = origins
             seq_map_features[:, t] = self._get_map_features(local_map, global_map)
-            seq_point_clouds[:, t] = local_pc
 
         return (
             seq_map_features,
@@ -330,7 +332,6 @@ class Categorical2DSemanticMapModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
-            seq_point_clouds,
         )
 
     def _update_local_map_and_pose(
@@ -421,23 +422,26 @@ class Categorical2DSemanticMapModule(nn.Module):
 
         #################### pointclouds ####################
         
-        xyz = point_cloud_base_coords.clone().reshape(batch_size,-1, 3)
+        # xyz = point_cloud_base_coords.clone().reshape(batch_size,-1, 3)
 
         # we use the detection score as feat for point cloud
         # we assume total_num_instance is the same for all batch (padded with 0)
+
+        # first take max prob value for pixel
         scores = detection_result["scores"] # [B, total_num_instance]
         classes = detection_result["classes"] # [B, total_num_instance]
         masks = detection_result["masks"].float() # [B, total_num_instance, H, W]
         relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
 
         if masks.shape[1] == 0: # no instance detected
-            prob_feat = torch.zeros(batch_size, h // self.du_scale * w // self.du_scale).to(device)
+            prob_feat = torch.zeros(batch_size, 1, h // self.du_scale * w // self.du_scale).to(device)
         else:
             score_relevence = scores * relevance[classes] # [B, total_num_instance]
-            prob_feat = torch.einsum('bnhw,bn->bhw',masks, score_relevence) # [B, H, W]
+            prob_feat = torch.einsum('bnhw,bn->bnhw',masks, score_relevence) # [B, N, H, W]
+            prob_feat,_ = torch.max(prob_feat, dim=1, keepdim=True) # [B,1, H, W]
             prob_feat = nn.AvgPool2d(self.du_scale)(prob_feat).view(
-                    batch_size, h // self.du_scale * w // self.du_scale
-                ) # [B, H*W] after scaling
+                    batch_size, 1,  h // self.du_scale * w // self.du_scale
+                ) # [B, 1,  H*W] after scaling
         #################### pointclouds ####################
 
         point_cloud_map_coords = du.transform_pose_t(
@@ -453,13 +457,15 @@ class Categorical2DSemanticMapModule(nn.Module):
                 orig=np.zeros(3),
             )
        
-        if masks.shape[1] == 0: # no detection results
-            num_instance = 0
-        else:
-            _, num_instance, _,_ = masks.size()
-        
+        # PMO for probabilistic map only
+        # if masks.shape[1] == 0: # no detection results
+        #     num_instance = 0
+        # else:
+        #     _, num_instance, _,_ = masks.size()
+        # voxel_channels = 1 + num_instance
 
-        voxel_channels = 1 + num_instance
+        voxel_channels = 2 + self.num_sem_categories # first is for 3d structure, last is for prob feat
+        
         init_grid = torch.zeros(
             batch_size,
             voxel_channels,
@@ -471,15 +477,22 @@ class Categorical2DSemanticMapModule(nn.Module):
         )
         feat = torch.ones(
             batch_size,
-            voxel_channels,
+            voxel_channels-1, # cat + prob
             self.screen_h // self.du_scale * self.screen_w // self.du_scale,
             device=device,
             dtype=torch.float32,
         )
-        if num_instance > 0:
-            feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(masks).view(
-                batch_size, num_instance, h // self.du_scale * w // self.du_scale
-            )
+
+        # PMO
+        # if num_instance > 0:
+        #     feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(masks).view(
+        #         batch_size, num_instance, h // self.du_scale * w // self.du_scale
+        #     )
+
+        feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(obs[:, 4:, :, :]).view(
+            batch_size, obs_channels - 4, h // self.du_scale * w // self.du_scale
+        )
+        feat = torch.cat([feat,prob_feat],dim=1)
 
         XYZ_cm_std = point_cloud_map_coords.float()
         XYZ_cm_std[..., :2] = XYZ_cm_std[..., :2] / self.xy_resolution
@@ -495,26 +508,19 @@ class Categorical2DSemanticMapModule(nn.Module):
             / (self.max_voxel_height - self.min_voxel_height)
             * 2.0
         )
-        XYZ_cm_std = XYZ_cm_std.permute(0, 3, 1, 2)
+        XYZ_cm_std = XYZ_cm_std.permute(0, 3, 1, 2) # [B, 3, H, W]
         XYZ_cm_std = XYZ_cm_std.view(
             XYZ_cm_std.shape[0],
             XYZ_cm_std.shape[1],
             XYZ_cm_std.shape[2] * XYZ_cm_std.shape[3],
-        )
+        ) # [B, 3, H*W]
 
         voxels = du.splat_feat_nd(init_grid, feat, XYZ_cm_std).transpose(2, 3)
-        voxels_sum = voxels.sum(4)
-        agent_height_proj = voxels[
-            ..., self.min_mapped_height : self.max_mapped_height
+        all_height_proj = voxels.sum(4)
+        # the agent_height range corresponds to 10cm to 120cm in agent base frame
+        agent_height_proj = voxels[:,:-1,:,:,
+            self.min_mapped_height : self.max_mapped_height
         ].sum(4)
-        all_height_proj = voxels_sum
-
-        # TODO filter out voxels that are lower than the threshold
-        # this is based on the assumption that the object should not be on the ground
-        instance_projection = voxels[:, 1:, :, :,
-             self.min_mapped_height + 4 : self.max_mapped_height
-        ].sum(4) # [B, total_num_instance, H, W]
-
      
         fp_map_pred = agent_height_proj[:, 0:1, :, :]
         fp_exp_pred = all_height_proj[:, 0:1, :, :]
@@ -525,40 +531,51 @@ class Categorical2DSemanticMapModule(nn.Module):
         close_exp[:,:, self.close_range:,:] = 0 # only consider the close range 1.5m
         
         ################ probabilitic ################
-        ### We need to pad the instances to the same size
-        probs = torch.zeros([batch_size, 
-                                self.num_sem_categories,
-                                self.vision_range,
-                                self.vision_range], 
-                                dtype=torch.float32,
-                                device=device)
         
-        for c in [1,2,3]: # obj, rec, goal_rec
-            idx_b, idx_c = torch.where(classes==c) 
-            if len(idx_b) == 0: # no detection for all batches
-                continue
+        ############ PMO ##############
+        # # TODO filter out voxels that are lower than the threshold
+        # # this is based on the assumption that the object should not be on the ground
+        # instance_projection = voxels[:, 1:, :, :,
+        #      self.min_mapped_height + 4 : self.max_mapped_height
+        # ].sum(4) # [B, total_num_instance, H, W]
 
-            # combine the instances from the same class by taking the max
-            instances_list = instance_projection[[idx_b, idx_c]].clamp(0,1) # [c_total_num_instance, H, W]
-            instances_list *= scores[[idx_b, idx_c]].unsqueeze(-1).unsqueeze(-1) # [c_total_num_instance, H, W]
-            idx_b_list = idx_b.tolist()
-            part_sizes = [idx_b_list.count(i) for i in range(batch_size)]
+        # ### We need to pad the instances to the same size
+        # probs = torch.zeros([batch_size, 
+        #                         self.num_sem_categories,
+        #                         self.vision_range,
+        #                         self.vision_range], 
+        #                         dtype=torch.float32,
+        #                         device=device)
+        
+        # for c in [1,2,3]: # obj, rec, goal_rec
+        #     idx_b, idx_c = torch.where(classes==c) 
+        #     if len(idx_b) == 0: # no detection for all batches
+        #         continue
 
-            instances_list = torch.split(instances_list, part_sizes, dim=0)
-            instances_tensor = pad_sequence(instances_list, batch_first=True) # [B, c_num_instance, H, W]
-            combined, _ = torch.max(instances_tensor, dim=1)   # [B, H, W]
+        #     # combine the instances from the same class by taking the max
+        #     instances_list = instance_projection[[idx_b, idx_c]].clamp(0,1) # [c_total_num_instance, H, W]
+        #     instances_list *= scores[[idx_b, idx_c]].unsqueeze(-1).unsqueeze(-1) # [c_total_num_instance, H, W]
+        #     idx_b_list = idx_b.tolist()
+        #     part_sizes = [idx_b_list.count(i) for i in range(batch_size)]
 
-            probs[:, c, :, :] = combined
+        #     instances_list = torch.split(instances_list, part_sizes, dim=0)
+        #     instances_tensor = pad_sequence(instances_list, batch_first=True) # [B, c_num_instance, H, W]
+        #     combined, _ = torch.max(instances_tensor, dim=1)   # [B, H, W]
 
-        # assign hard detection results
-        detected = probs > self.confident_threshold
+        #     probs[:, c, :, :] = combined
 
-        # relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
-        prob_map = torch.einsum('bchw,c->bhw',probs,relevance) # [B, H, W]
+        # # assign hard detection results
+        # detected = probs > self.confident_threshold
 
-        # we only reduce the probablities for the close range that is viewable by the agent
-        # prior_matrix = self.prior_matrix.repeat(batch_size, 1, 1) # [B, H, W]
-        # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
+        # # relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
+        # prob_map = torch.einsum('bchw,c->bhw',probs,relevance) # [B, H, W]
+
+        # # we only reduce the probablities for the close range that is viewable by the agent
+        # # prior_matrix = self.prior_matrix.repeat(batch_size, 1, 1) # [B, H, W]
+        # # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
+
+        ########### end PMO ###################
+        prob_map, _ = voxels[:,-1,:,:, : self.max_mapped_height].max(3)
 
         # TODO: should we use close_range or exp, or just all viewable area?
         # we can use a smaller prior for all viewable area, and bigger prior for close range
@@ -566,34 +583,8 @@ class Categorical2DSemanticMapModule(nn.Module):
         prob_logit[fp_exp_pred.squeeze(1) == 0] = 0 # set unviewable area to 0
         prob_logit = torch.clamp(prob_logit, min=-10, max=10)        
 
-
-        # # compute centroids
-        # proj_instance = voxels_sum[:, 1+self.num_sem_categories:, :, :] > 0 # [B, num_masks, H, W]
-        # has_object = proj_instance.sum([2,3]) > 0 # [B, num_masks]
-        
-        # centroids_x = proj_instance * self.dist_cols.to(device)
-        # centroids_y = proj_instance * self.dist_rows.to(device)
-        # centroids_x = centroids_x.sum([2,3]) / proj_instance.sum([2,3]) # [B, num_masks]
-        # centroids_y = centroids_y.sum([2,3]) / proj_instance.sum([2,3]) # [B, num_masks]
-        # dist = (centroids_x ** 2 + centroids_y ** 2)**0.5 # [B, num_masks]
-        # theta = torch.atan2(centroids_x, centroids_y) # [B, num_masks]
-        # scores = detection_result["scores"] # [B, num_masks]
-        # classes = detection_result["classes"] # [B, num_masks]
-        
-        # not_confident = scores < 0.5
-        # is_close = dist < 50 # [B, num_masks] 2.5m
-        # is_side = theta > 0.5 # [B, num_masks] 30 degrees
-        # alpha = torch.ones_like(scores)
-        # alpha[not_confident & is_close] *= 0.5
-        # alpha[not_confident & is_side] *= 0.5
-        # alpha[classes == 2] *= 0.5 # receptacle
-        # alpha[classes >= 3] = 0 # goal receptacle
-        
-        # proj_instance = proj_instance * alpha.unsqueeze(2).unsqueeze(3) * scores.unsqueeze(2).unsqueeze(3)
         
 
-        # confident_instance = scores > 0.7 # [B, num_masks]
-            
         ############### end probabilistic ###############
 
 
@@ -608,22 +599,26 @@ class Categorical2DSemanticMapModule(nn.Module):
 
         # Update agent view from the fp_map_pred
         if self.dilate_obstacles:
-            for i in range(fp_map_pred.shape[0]):
-                env_map = fp_map_pred[i, 0].cpu().numpy()
-                # TODO: remove if not used
-                # env_map_eroded = cv2.erode(
-                #     env_map, self.dilate_kernel, self.dilate_iter
-                # )
-                # filt = cv2.filter2D(env_map, -1, self.dilate_kernel)
-                median_filtered = cv2.medianBlur(env_map, self.dilate_size)
+            
+            fp_map_pred =  torch.nn.functional.conv2d(
+                fp_map_pred, self.dialate_kernel.to(device), padding=self.dilate_size // 2
+            ).clamp(0, 1)
+            # for i in range(fp_map_pred.shape[0]):
+            #     env_map = fp_map_pred[i, 0].cpu().numpy()
+            #     # TODO: remove if not used
+            #     # env_map_eroded = cv2.erode(
+            #     #     env_map, self.dilate_kernel, self.dilate_iter
+            #     # )
+            #     # filt = cv2.filter2D(env_map, -1, self.dilate_kernel)
+            #     median_filtered = cv2.medianBlur(env_map, self.dilate_size)
 
-                # TODO: remove debug code
-                # plt.subplot(121); plt.imshow(env_map)
-                # plt.subplot(122); plt.imshow(env_map_eroded)
-                # plt.show()
-                # breakpoint()
-                # fp_map_pred[i, 0] = torch.tensor(env_map_eroded)
-                fp_map_pred[i, 0] = torch.tensor(median_filtered)
+            #     # TODO: remove debug code
+            #     # plt.subplot(121); plt.imshow(env_map)
+            #     # plt.subplot(122); plt.imshow(env_map_eroded)
+            #     # plt.show()
+            #     # breakpoint()
+            #     # fp_map_pred[i, 0] = torch.tensor(env_map_eroded)
+            #     fp_map_pred[i, 0] = torch.tensor(median_filtered)
 
         x1 = self.local_map_size_cm // (self.xy_resolution * 2) - self.vision_range // 2
         x2 = x1 + self.vision_range
@@ -633,17 +628,38 @@ class Categorical2DSemanticMapModule(nn.Module):
         agent_view[:, MC.EXPLORED_MAP : MC.EXPLORED_MAP + 1, y1:y2, x1:x2] = fp_exp_pred
         agent_view[:, MC.BEEN_CLOSE_MAP : MC.BEEN_CLOSE_MAP + 1, y1:y2, x1:x2] = close_exp
         agent_view[:, MC.PROBABILITY_MAP , y1:y2, x1:x2] = prob_logit
-        agent_view[
-            :,
-            MC.NON_SEM_CHANNELS : MC.NON_SEM_CHANNELS + self.num_sem_categories,
-            y1:y2,
-            x1:x2,
-        ] = (
-            detected
-            / self.cat_pred_threshold
+        agent_view[:, MC.VOXEL_START: MC.NON_SEM_CHANNELS, y1:y2, x1:x2] = voxels[:,-1,:,:,
+            : self.max_mapped_height
+        ].permute(0,3,1,2) # [B, H, W, C] -> [B, C, H, W]
+        
+        # PMO
+        # agent_view[
+        #     :,
+        #     MC.NON_SEM_CHANNELS : MC.NON_SEM_CHANNELS + self.num_sem_categories,
+        #     y1:y2,
+        #     x1:x2,
+        # ] = (
+        #     detected
+        #     / self.cat_pred_threshold
+        # )
+        agent_view[:, MC.NON_SEM_CHANNELS :, y1:y2, x1:x2] = (
+            all_height_proj[:, 1:-1] / self.cat_pred_threshold
         )
-
-
+        
+        #### for voxel ####
+        occupaid_voxel = torch.zeros(
+            batch_size,
+            self.max_mapped_height,
+            self.local_map_size_cm // self.xy_resolution,
+            self.local_map_size_cm // self.xy_resolution,
+            device=device,
+            dtype=dtype,
+        )
+            
+        occupaid_voxel[..., y1:y2, x1:x2] = voxels[:,0,:,:, : self.max_mapped_height].permute(0,3,1,2)
+        agent_view = torch.cat([agent_view, occupaid_voxel], dim=1)
+        ####################
+        
         current_pose = pu.get_new_pose_batch(prev_pose.clone(), pose_delta)
         st_pose = current_pose.clone().detach()
 
@@ -660,9 +676,15 @@ class Categorical2DSemanticMapModule(nn.Module):
         rotated = F.grid_sample(agent_view, rot_mat, align_corners=True)
         translated = F.grid_sample(rotated, trans_mat, align_corners=True)
 
+        
+        #### for voxel ####
+        occupaid_voxel_st = translated[:,MC.NON_SEM_CHANNELS+self.num_sem_categories:,:,:]
+        translated = translated[:,:MC.NON_SEM_CHANNELS+self.num_sem_categories,:,:]
+        ####################
+
         # Clamp to [0, 1] after transform agent view to map coordinates
         idx_no_prob = list(range(0,MC.PROBABILITY_MAP)) + \
-                    list(range(MC.PROBABILITY_MAP+1,MC.NON_SEM_CHANNELS+self.num_sem_categories))
+                    list(range(MC.NON_SEM_CHANNELS, MC.NON_SEM_CHANNELS+self.num_sem_categories))
         translated[:,idx_no_prob] = torch.clamp(translated[:,idx_no_prob], min=0.0, max=1.0)
 
         maps = torch.cat((prev_map.unsqueeze(1), translated.unsqueeze(1)), 1)
@@ -673,15 +695,48 @@ class Categorical2DSemanticMapModule(nn.Module):
         ############### Bayesian update ###############
         current_map[:, MC.PROBABILITY_MAP, :, :] = torch.sum(maps[:, :, MC.PROBABILITY_MAP,:, :], 1)
         current_map[:, MC.PROBABILITY_MAP, :, :] = torch.clamp(current_map[:, MC.PROBABILITY_MAP, :, :], min=-10, max=10)
-        goal_idx = 7
+        goal_idx = MC.NON_SEM_CHANNELS + 1 # goal object
         confident_no_obj = (current_map[:, MC.BEEN_CLOSE_MAP] == 1) & (current_map[:, goal_idx] < self.confident_threshold)
         current_map[:, MC.PROBABILITY_MAP][confident_no_obj] = -10 
 
         ############### end Bayesian update ###############
+        
+        ############## voxel update ################
+        # we only update occupaid voxel (by current observation)
+        # if voxel is empty in the previous map (isnan), then we assign the logit of the voxel: 
+        # otherwise, update with l(p^t) = l(p^t-1) + l(p^t) - l(p)
+        is_occupaid = occupaid_voxel_st >0.5
+        is_pre_empty = prev_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].isnan()
+        need_assign_logit = is_occupaid & is_pre_empty
+        need_addition_logit = is_occupaid & ~is_pre_empty
+        voxel_logit = torch.logit(
+            translated[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:],eps=1e-6)
+        
+        updated = prev_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].clone()
+        # case 1
+        updated[need_assign_logit] = voxel_logit[need_assign_logit]
+        # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:][need_assign_logit] = voxel_logit[need_assign_logit]
+        # case 2
+        updated[need_addition_logit] = prev_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:][need_addition_logit] + \
+            voxel_logit[need_addition_logit] - self.prior_logit
+        # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:][need_addition_logit] += \
+        #     (voxel_logit[need_addition_logit] - self.prior_logit)
+        
+        is_post_occupaid = ~updated.isnan()
+        updated[is_post_occupaid] = torch.clamp(updated[is_post_occupaid], min=-10, max=10)
+        # is_post_occupaid = ~current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].isnan()
+        # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].clamp_(min=-10,max=10)
+
+        confident_no_obj = confident_no_obj.unsqueeze(1).repeat(1,self.max_mapped_height, 1,1) # [B, H, W] -> [B, C, H, W]
+        updated[confident_no_obj & is_post_occupaid] = -10
+        current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:] = updated
+        # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:][confident_no_obj & is_post_occupaid] = -10
+        
+        ############### end voxel update ###############
         # Reset current location
         # TODO: it is always in the center, do we need it?
         current_map[:, MC.CURRENT_LOCATION, :, :].fill_(0.0)
-        curr_loc = current_pose[:, :2]
+        curr_loc = current_pose[:, :2] # 245, 240 
         curr_loc = (curr_loc * 100.0 / self.xy_resolution).int()
 
         for e in range(batch_size):
@@ -774,7 +829,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         #         current_map[:, MC.OBSTACLE_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
         #     )
 
-        return current_map, current_pose, xyz
+        return current_map, current_pose
 
     def _update_global_map_and_pose_for_env(
         self,

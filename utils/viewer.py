@@ -45,6 +45,7 @@ class OpenCVViewer:
             return
         else:
             action = DiscreteNavigationAction.STOP
+            info = ""
             while True:
                 key = cv2.waitKey(delay)
                 if key == 27:  # escape
@@ -53,10 +54,12 @@ class OpenCVViewer:
                     pass
                 elif key == 32:  # space
                     return {'info':'done','action':action}
+                elif key == 13:  # enter
+                    info = 'plan_high'
                 else:
                     action = self.parse_key(key)
                     if action is not None:
-                        return {'action':action}
+                        return {'action':action, 'info':info}
                 
 
     def close(self):

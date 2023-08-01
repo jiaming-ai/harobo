@@ -264,9 +264,13 @@ class PulsarPointsRenderer(nn.Module):
                 focal_length = znear - 1e-6
                 # Create a sensor size that matches the expected fov assuming this f.
                 afov = kwargs.get("fov", cameras.fov)[cloud_idx]
+                if isinstance(afov, torch.Tensor):
+                    afov = afov.clone()
+
                 if kwargs.get("degrees", cameras.degrees):
                     afov *= math.pi / 180.0
                 sensor_width = math.tan(afov / 2.0) * 2.0 * focal_length
+                # sensor_width = math.tan(afov / 2.0) * 2.0 * 1.0
                 if not (
                     kwargs.get("aspect_ratio", cameras.aspect_ratio)[cloud_idx]
                     - self.renderer._renderer.width / self.renderer._renderer.height
@@ -412,7 +416,7 @@ class PulsarPointsRenderer(nn.Module):
         return vert_rad
 
     # point_clouds is not typed to avoid a cyclic dependency.
-    def forward(self, point_clouds, **kwargs) -> torch.Tensor:
+    def forward(self, point_clouds, render_info=False,**kwargs) -> torch.Tensor:
         """
         Get the rendering of the provided `Pointclouds`.
 
@@ -535,8 +539,8 @@ class PulsarPointsRenderer(nn.Module):
             }
             # background color
             if "bg_col" not in otherargs:
-                bg_col = torch.zeros(
-                    vert_col.shape[1], device=cam_params.device, dtype=torch.float32
+                bg_col = torch.full(
+                    (vert_col.shape[1],), -1., device=cam_params.device, dtype=torch.float32
                 )
                 otherargs["bg_col"] = bg_col
             # Go!
@@ -563,9 +567,14 @@ class PulsarPointsRenderer(nn.Module):
                     min_depth=znear,
                     **otherargs,
                 )
-            images.append(image.flip(dims=[0]))
+            if render_info:
+                image[image==-1] = 0.
+                images.append(image.sum(dim=(0,1)))
+            else:
+                images.append(image.flip(dims=[0]))
         img_tensor = torch.stack(images, dim=0)
         if kwargs.get('return_forward_info',False):
             return img_tensor, rets
         else:
             return img_tensor
+        

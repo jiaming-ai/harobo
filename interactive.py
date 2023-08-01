@@ -10,7 +10,7 @@ from enum import IntEnum, auto
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from agent.ovmm.ovmm import OVMMAgent
-
+from utils.ovmm_env_visualizer import Visualizer
 HOME_ROBOT_BASE_DIR = str(Path(__file__).resolve().parent.parent / "home-robot") + "/"
 
 sys.path.insert(
@@ -203,7 +203,8 @@ class InteractiveEvaluator():
         ob = env.reset()
         # update_detic_perception_vocab(ob, detic_perception)
 
-        
+        visualizer = Visualizer(self.config,self.env._dataset)
+        visualizer.reset()
         agent.reset_vectorized([self.env.current_episode()])
         agent_info = None
         print('*'*20)
@@ -233,7 +234,7 @@ class InteractiveEvaluator():
                 #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
                 
                 # visualize semantic map
-                vis = env.visualizer.visualize(**agent_info)
+                vis = visualizer.visualize(**agent_info)
                 semantic_map_vis = vis['semantic_map']
                 semantic_map_vis = cv2.resize(
                     semantic_map_vis,
@@ -253,15 +254,28 @@ class InteractiveEvaluator():
                 prob_map = (prob_map * 255).astype(np.uint8)
                 prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
                 draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
-
+                
+                # visualize info_gain map
+                if "info_map" in agent_info and agent_info['info_map'] is not None:
+                    info_map = agent_info['info_map']
+                    info_map = np.flipud(info_map)
+                    info_map = cv2.resize(
+                        info_map,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    info_map = (info_map * 255).astype(np.uint8)
+                    if info_map.ndim == 2:
+                        info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
+                    draw_ob = np.concatenate([draw_ob, info_map], axis=1)
                 # draw
                 user_action = self.viewer.imshow(
                     draw_ob, delay=0 if self.args.interactive else 2
                 )
 
             if self.args.interactive:
-                if 'info' in user_action:
-                    done = True
+                if user_action['info'] == "plan_high":
+                    agent.force_update_high_goal()
                 action = user_action['action']
 
             outputs = env.apply_action(action, agent_info)
@@ -273,6 +287,7 @@ class InteractiveEvaluator():
                 agent.reset_vectorized_for_env(
                     0, self.env.current_episode()
                 )
+                visualizer.reset()
                 print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')
 

@@ -31,7 +31,7 @@ from home_robot.utils import rotation as ru
 
 from pytorch3d.ops import sample_farthest_points
 
-from .opt_dr import OptDR
+from .urp_dr import DRPlanner
 DEBUG = False
 
 class PointCloudManager:
@@ -48,15 +48,24 @@ class PointCloudManager:
         self.map_center_coord = self.global_map_size / 200 #  in meter
         self.map_resolution = config.AGENT.SEMANTIC_MAP.map_resolution
 
+        self.global_map_size_pixel = self.global_map_size / self.map_resolution # in pixel
+
         self.camera_tilt = None
         self.camera_height = None
+
+    
+        self._grid_to_idx = {} # dict of (x,y) -> list of idx
+
 
     def add_points(self, points, agent_pose):
         """
         Add points to the point cloud. The points are assumed to be in the agent base frame, 
         and will be transformed to the world frame defined by habitat (y-right, z-up, x-forward)
         Args:
-            points: tensor of B x N x 3, in agent base frame, unit is meter
+            points: tensor of B x N x 3, in agent base frame, unit is meter. Note by default this frame i:
+                X is positive going right
+                Y is positive into the image
+                Z is positive up in the image
             agent_pose: tuple (x,y,theta), in agent base frame, unit is meter and radian            
         """
 
@@ -84,11 +93,31 @@ class PointCloudManager:
         if self.downsample_pc_k > 0:
             xyz_global, _ = sample_farthest_points(xyz_global, K=self.downsample_pc_k)
 
+
         if self._points is None:
             self._points = xyz_global
+            start_idx = 0
         else:
+            start_idx = self._points.shape[1]
             self._points = torch.cat([self._points, xyz_global], dim=1)
 
+        # update the grid to idx dict
+        # import time
+        # start = time.time()
+
+        xys = xyz_global[..., :2] * 100 // self.map_resolution # B x N x 2
+        # assume only one batch TODO: support multiple batch
+        xys = xys[0].tolist()
+        for i, xy in enumerate(xys):
+            # xy = xys[i]
+            xy = tuple(xy)
+            if xy not in self._grid_to_idx:
+                self._grid_to_idx[xy] = []
+            self._grid_to_idx[xy].append(start_idx + i)
+
+        # end = time.time()
+        # print("update grid to idx dict takes {}s".format(end - start))
+            
         if DEBUG:
             show_points(self._points[0])
 
@@ -161,7 +190,7 @@ class PointCloudManager:
             # self.T_bc = T_bc.to(points.device)
         
         # camera_pose = self.get_camera_frame(agent_pose)
-        odr = OptDR(self.camera_tilt, self.camera_height, self.config, points.device)
+        odr = DRPlanner(self.camera_tilt, self.camera_height, self.config, points.device)
         odr.init_agent_pose(torch.tensor(agent_pose).unsqueeze(0))
         odr(points)
         # rasterize_pc(points,

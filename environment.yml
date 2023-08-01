@@ -1,0 +1,44 @@
+channels:
+  - pytorch # !! we need to specify pytorch channel before conda forge to get the correct torch version. still cu112??
+  - conda-forge
+  # - pytorch3d
+  - nvidia
+dependencies:
+  - python==3.9.*
+  - cmake
+  - pybind11
+  - libxcb=1.15
+  - pinocchio
+  - pytorch==1.13.1  # Compatibility with pytorch3d
+  - torchvision==0.14.1
+  - pytorch-cuda=11.7 # need to build from source
+  # - pytorch3d=0.7.2 # need to build from source
+  - opencv
+  - pip
+  - pip:
+    - numpy <1.24 # certain deprecated operations were used in other deps
+    - scipy
+    - sophuspy
+    - pybullet
+    - trimesh
+    - pytest
+    - scikit-image
+    - scikit-fmm
+    - scikit-learn
+    - numpy-quaternion
+    - natsort
+    # Neural networks
+    - openai-clip
+    - timm
+    - pandas
+    # visualizations and debugging
+    - matplotlib
+    # Command line tools
+    - click
+    # data tools
+    - yacs
+    - h5py
+    - imageio
+    - pygifsicle
+    - pynput
+    - git+https://github.com/openai/CLIP.git

@@ -40,6 +40,72 @@ def show_points(points,feats=None):
     })
     fig.show()
 
+def show_points_with_logit(points,feat):
+    """
+    points: N x 3
+    feat: N x 1, logits
+    """
+    color = torch.zeros_like(points) # N x 3
+    # > logit(0.5)
+    color[feat.squeeze(1) >= 0] = torch.tensor([1,0,0],dtype=torch.float32, device=points.device) # red
+    # < logit(0.5) and > logit(0.2)
+    color[(feat.squeeze(1) <0) & (feat.squeeze(1)>=-1.39) ] = torch.tensor([0,0,1],dtype=torch.float32, device=points.device) # blue
+    point_cloud = Pointclouds(points=[points], features=[color])
+    fig = plot_scene({
+        "Pointcloud": {
+            "scene": point_cloud,
+        }
+    })
+    fig.show()
+
+def show_points_with_prob(points,feat):
+    """
+    points: N x 3
+    feat: N x 1, logits
+    """
+    color = torch.zeros_like(points) # N x 3
+    # > logit(0.5)
+    color[feat.squeeze(1) >= 0.5] = torch.tensor([1,0,0],dtype=torch.float32, device=points.device) # red
+    # < logit(0.5) and > logit(0.2)
+    color[(feat.squeeze(1) <0.5) & (feat.squeeze(1)>=0.2) ] = torch.tensor([0,0,1],dtype=torch.float32, device=points.device) # blue
+    point_cloud = Pointclouds(points=[points], features=[color])
+    fig = plot_scene({
+        "Pointcloud": {
+            "scene": point_cloud,
+        }
+    })
+    fig.show()
+
+def show_voxel(voxel_tensor):
+    """
+    voxel_tensor: B x Z x X x Y
+    """
+    
+    voxel = voxel_tensor[0].permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
+    idx = torch.nonzero(~voxel.isnan()) # [N, 3]
+    feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
+    pc = idx.float() # [N, 3]
+    # pc[:,:2] -= self.global_map_size / 2 
+    # pc = pc * self.resolution + self.resolution / 2 # [N, 3] 
+    # pc = pc / 100 # [N, 3] in meter    
+
+    show_points_with_prob(pc,feat)
+
+def get_pc_from_voxel(voxel, res, agent_pose=np.array([0.,0.,0.])):
+    """
+    get point cloud from voxel
+    args:
+        voxel: tensor of size [B, X, Y, Z], in agent base frame, the coordinates are in map frame
+    """
+    pc = torch.nonzero(~voxel.isnan()) # [N, 3]
+    pc = pc.float() * res + res / 2 # [N, 3] in cm
+
+    pc = du.transform_pose_t(
+            pc, agent_pose , pc.device
+        )
+    
+    return pc
+    
 def get_agent_pose_matrix(agent_pose):
     """
     get 4x4 transformation matrix describing agent pose. using habitat world frame (y-right, z-up, x-forward)
