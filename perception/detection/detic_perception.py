@@ -145,6 +145,7 @@ class DeticPerception(PerceptionModule):
         string_args = string_args.split()
         args = get_parser().parse_args(string_args)
         cfg = setup_cfg(args)
+        self.confirm_detection_threshold = 0.5
 
         assert vocabulary in ["coco", "custom"]
         if args.vocabulary == "custom":
@@ -274,7 +275,11 @@ class DeticPerception(PerceptionModule):
                 [filter_depth(mask, depth, depth_threshold) for mask in masks]
             )
 
-        semantic_map, instance_map = overlay_masks(masks, class_idcs, (height, width))
+        # only select instances with score > threshold for confirmed detection
+        confirm_detection_idx = scores > self.confirm_detection_threshold
+        semantic_map, instance_map = overlay_masks(masks[confirm_detection_idx], 
+                                                   class_idcs[confirm_detection_idx], 
+                                                   (height, width))
 
         ret['semantic'] = semantic_map.astype(int)
         ret["masks"] = masks

@@ -48,54 +48,14 @@ from utils.visualization import (
     visualize_pred,
     save_img_tensor)
 
-# from home_robot.agent.ovmm_agent.ovmm_perception import (
-#     OvmmPerception,
-#     build_vocab_from_category_map,
-#     read_category_map_file,
-# )
-
-
-
-# def get_config(
-#     path: str, opts: Optional[list] = None, configs_dir: str = _BASELINES_CFG_DIR
-# ) -> Tuple[DictConfig, str]:
-#     config = get_habitat_config(path, overrides=opts, configs_dir=configs_dir)
-#     return config, ""
-
-# class SemanticVocab(IntEnum):
-#     FULL = auto()
-#     SIMPLE = auto()
-
-
-# def update_detic_perception_vocab(obs, perception,config):
-#     obj_name_to_id, rec_name_to_id = read_category_map_file(
-#         config.ENVIRONMENT.category_map_file
-#     )
-    
-#     obj_id_to_name = {
-#         0: obs.task_observations["object_name"],
-#     }
-#     simple_rec_id_to_name = {
-#         0: obs.task_observations["start_recep_name"],
-#         1: obs.task_observations["place_recep_name"],
-#     }
-
-#     # Simple vocabulary contains only object and necessary receptacles
-#     simple_vocab = build_vocab_from_category_map(
-#         obj_id_to_name, simple_rec_id_to_name
-#     )
-#     perception.update_vocubulary_list(simple_vocab, SemanticVocab.SIMPLE)
-
-#     # Full vocabulary contains the object and all receptacles
-#     full_vocab = build_vocab_from_category_map(obj_id_to_name, rec_name_to_id)
-#     perception.update_vocubulary_list(full_vocab, SemanticVocab.FULL)
-
-#     perception.set_vocabulary(SemanticVocab.SIMPLE)
-
-def create_ovmm_env_fn(config):
+def create_ovmm_env_fn(config,eval_eps=None):
     """Create habitat environment using configsand wrap HabitatOpenVocabManipEnv around it. This function is used by VectorEnv for creating the individual environments"""
     habitat_config = config.habitat
     dataset = make_dataset(habitat_config.dataset.type, config=habitat_config.dataset)
+    if eval_eps is not None:
+        eval_eps = [f'{e}' for e in eval_eps]
+        eps_list = [eps for eps in dataset.episodes if eps.episode_id in eval_eps]
+        dataset.episodes = eps_list
     env_class_name = _get_env_name(config)
     env_class = get_env_class(env_class_name)
     habitat_env = env_class(config=habitat_config, dataset=dataset)
@@ -137,7 +97,7 @@ class InteractiveEvaluator():
 
     def eval(self, num_episodes_per_env=10):
      
-        self.env = create_ovmm_env_fn(self.config)
+        self.env = create_ovmm_env_fn(self.config,self.args.eval_eps)
         agent = OVMMAgent(
             config=self.config,
             device_id=self.gpu_id,
@@ -210,12 +170,14 @@ class InteractiveEvaluator():
         print('*'*20)
         print(f'Goal: {ob.task_observations["goal_name"]}')
         pre_entropy = 0
-        for ep_idx in range(env.number_of_episodes):
+        ep_idx = 0
+        while ep_idx < env.number_of_episodes:
+            
             current_episodes_info = [self.env.current_episode()]
             print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             action, agent_info, _ = agent.act(ob)
-            print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
-            pre_entropy = agent_info["entropy"]
+            # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
+            # pre_entropy = agent_info["entropy"]
             
             if not self.args.no_render:
 
@@ -244,16 +206,17 @@ class InteractiveEvaluator():
                 draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
 
                 # visualize probabilistic map
-                prob_map = agent_info['probabilistic_map']
-                prob_map = np.flipud(prob_map)
-                prob_map = cv2.resize(
-                    prob_map,
-                    (640, 640),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                prob_map = (prob_map * 255).astype(np.uint8)
-                prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
-                draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
+                if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
+                    prob_map = agent_info['probabilistic_map']
+                    prob_map = np.flipud(prob_map)
+                    prob_map = cv2.resize(
+                        prob_map,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    prob_map = (prob_map * 255).astype(np.uint8)
+                    prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
+                    draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
                 
                 # visualize info_gain map
                 if "info_map" in agent_info and agent_info['info_map'] is not None:
@@ -273,16 +236,18 @@ class InteractiveEvaluator():
                     draw_ob, delay=0 if self.args.interactive else 2
                 )
 
-            if self.args.interactive:
+            if self.args.interactive and user_action is not None:
                 if user_action['info'] == "plan_high":
-                    agent.force_update_high_goal()
+                    agent.force_update_high_goal(0)
                 action = user_action['action']
 
             outputs = env.apply_action(action, agent_info)
             ob, done, info = outputs
 
             if done:
+                print(f"Episode {ep_idx} finished.")
                 ob = env.reset()
+                ep_idx += 1
                  # update_detic_perception_vocab(ob, detic_perception)
                 agent.reset_vectorized_for_env(
                     0, self.env.current_episode()
@@ -331,6 +296,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to render the environment or not",
         default=True,
+    )
+    parser.add_argument(
+        "--eval_eps",
+        help="evaluate a subset of episodes",
+        nargs="+",
+        default=None,
     )
 
 

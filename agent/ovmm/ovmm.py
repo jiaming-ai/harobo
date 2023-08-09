@@ -122,7 +122,7 @@ class OVMMAgent(ObjectNavAgent):
         """Get inputs for visual skill."""
         use_detic_viz = self.config.ENVIRONMENT.use_detic_viz
 
-        if self.config.GROUND_TRUTH_SEMANTICS == 1 or use_detic_viz:
+        if self.config.GROUND_TRUTH_SEMANTICS == 1:
             semantic_category_mapping = None  # THIS DOES NOT WORK
         elif self.semantic_sensor.current_vocabulary_id == SemanticVocab.SIMPLE:
             semantic_category_mapping = RearrangeBasicCategories()

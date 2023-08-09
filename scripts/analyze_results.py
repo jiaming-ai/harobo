@@ -42,4 +42,4 @@ def make_result_videos(log_dir,prefix='snapshot',output_dir='videos'):
 
 
 if __name__ == '__main__':
-    make_result_videos('home-robot/datadump_rldetic/images/eval_hssd',output_dir='videos_rldetic')
+    make_result_videos('datadump/images/eval_hssd',output_dir='videos_ur_10alpha')

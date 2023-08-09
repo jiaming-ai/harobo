@@ -169,6 +169,10 @@ class Categorical2DSemanticMapModule(nn.Module):
         self.min_mapped_height = int(
             self.min_obs_height_cm / self.z_resolution - self.min_voxel_height
         )
+        # ignore the ground
+        self.filtered_min_height = int(
+            20 / self.z_resolution - self.min_voxel_height
+        )  # 20cm
         self.max_mapped_height = int(
             (self.agent_height + 1) / self.z_resolution - self.min_voxel_height
         )
@@ -456,13 +460,6 @@ class Categorical2DSemanticMapModule(nn.Module):
                 (rgb / 255.0).cpu().numpy(),
                 orig=np.zeros(3),
             )
-       
-        # PMO for probabilistic map only
-        # if masks.shape[1] == 0: # no detection results
-        #     num_instance = 0
-        # else:
-        #     _, num_instance, _,_ = masks.size()
-        # voxel_channels = 1 + num_instance
 
         voxel_channels = 2 + self.num_sem_categories # first is for 3d structure, last is for prob feat
         
@@ -489,6 +486,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         #         batch_size, num_instance, h // self.du_scale * w // self.du_scale
         #     )
 
+        # feat: 0 is for explored area, 1:-1 is for instance, -1 is for prob
         feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(obs[:, 4:, :, :]).view(
             batch_size, obs_channels - 4, h // self.du_scale * w // self.du_scale
         )
@@ -516,9 +514,13 @@ class Categorical2DSemanticMapModule(nn.Module):
         ) # [B, 3, H*W]
 
         voxels = du.splat_feat_nd(init_grid, feat, XYZ_cm_std).transpose(2, 3)
-        all_height_proj = voxels.sum(4)
-        # the agent_height range corresponds to 10cm to 120cm in agent base frame
-        agent_height_proj = voxels[:,:-1,:,:,
+        all_height_proj = voxels[:,:1,...].sum(4)
+        # ignore objects that are too low
+        filtered_height_proj = voxels[...,
+            self.filtered_min_height : self.max_mapped_height
+        ].sum(4)
+        # the agent_height range corresponds to 0cm to 120cm 
+        agent_height_proj = voxels[:,:1,:,:,
             self.min_mapped_height : self.max_mapped_height
         ].sum(4)
      
@@ -575,7 +577,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         # # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
 
         ########### end PMO ###################
-        prob_map, _ = voxels[:,-1,:,:, : self.max_mapped_height].max(3)
+        prob_map, _ = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
 
         # TODO: should we use close_range or exp, or just all viewable area?
         # we can use a smaller prior for all viewable area, and bigger prior for close range
@@ -643,7 +645,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         #     / self.cat_pred_threshold
         # )
         agent_view[:, MC.NON_SEM_CHANNELS :, y1:y2, x1:x2] = (
-            all_height_proj[:, 1:-1] / self.cat_pred_threshold
+            filtered_height_proj[:, 1:-1] / self.cat_pred_threshold
         )
         
         #### for voxel ####

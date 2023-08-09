@@ -133,6 +133,7 @@ class Categorical2DSemanticMapState:
         self.prior = probability_prior
         self.local_coords = np.array([self.local_map_size // 2, self.local_map_size // 2])
 
+    
     def init_map_and_pose(self):
         """Initialize global and local map and sensor pose variables."""
         for e in range(self.num_environments):
@@ -273,10 +274,20 @@ class Categorical2DSemanticMapState:
         
         return pc / 100, feat
 
-    def get_dialated_obstacle_map_local(self, e, size=3) -> np.ndarray:
+    def get_num_points(self, e) -> int:
+        """Get number of points in global point cloud for an environment."""
+        voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
+        return torch.sum(~voxel.isnan()).item()
+    
+    def get_num_explored_cells(self, e) -> int:
+        """Get number of explored cells in global map for an environment."""
+        return torch.sum(self.global_map[e, MC.EXPLORED_MAP, :, :]).item()
+    
+    def get_dialated_obstacle_map_local(self, e, size=0) -> np.ndarray:
         """Get dialated local obstacle map for an environment."""
         obstacle_map = self.local_map[e, MC.OBSTACLE_MAP, :, :]
-        obstacle_map = dialate_tensor(obstacle_map.unsqueeze(0), size)[0]
+        if size > 0:
+            obstacle_map = dialate_tensor(obstacle_map.unsqueeze(0), size)[0]
         obstacle_map = obstacle_map > 0
         return np.copy(obstacle_map.cpu().float().numpy())
 
@@ -296,7 +307,7 @@ class Categorical2DSemanticMapState:
         exp_map = self.global_map[e, MC.EXPLORED_MAP].clone()
 
         obstacle_map = self.global_map[e, MC.OBSTACLE_MAP] # [H, W]
-        obstacle_map = dialate_tensor(obstacle_map.unsqueeze(0), 9)[0] # [H, W]
+        obstacle_map = dialate_tensor(obstacle_map.unsqueeze(0), 5)[0] # [H, W]
         exp_map[obstacle_map > 0] = 0 # remove explored locations that are obstacles
 
         exp_locs = torch.nonzero(exp_map).float() # [N, 2] of (x, y)
@@ -316,14 +327,14 @@ class Categorical2DSemanticMapState:
         Returns:
             pos: tensor of shape [N, 2] in map frame (x: right, y: down)
         """
-        pos = pos + self.global_map_size_cm / 2 / 100 # first transform to the eps global hab frame 
+        pos_map = pos + self.global_map_size_cm / 2 / 100 # first transform to the eps global hab frame 
 
-        pos_map = pos * 100
+        pos_map = pos_map * 100
         pos_map = pos_map // self.resolution # in grids
         pos_map = pos_map[:, [1, 0]] # in grids, global map frame: x: right, y: down, with origin at the center
 
         # pos_map = pos_map + self.global_map_size / 2 # in grids, global map frame: x: right, y: down, with origin at the top left
-        return pos_map
+        return pos_map.long()
 
     def hab_world_to_map_local_frame(self, e, pos):
         """
@@ -333,9 +344,9 @@ class Categorical2DSemanticMapState:
         Returns:
             pos: tensor of shape [N, 2] in map frame (x: right, y: down)
         """
-        pos = pos + self.global_map_size_cm / 2 / 100 # first transform to the eps global hab frame 
+        pos_map = pos + self.global_map_size_cm / 2 / 100 # first transform to the eps global hab frame 
 
-        pos_map = pos - self.origins[e, :2] # [N, 2], transform to local hab frame
+        pos_map = pos_map - self.origins[e, :2] # [N, 2], transform to local hab frame
 
         pos_map = pos_map * 100
         pos_map = pos_map // self.resolution # in grids, local hab frame: x: forward, y: left
@@ -347,7 +358,8 @@ class Categorical2DSemanticMapState:
         pos_map = torch.clamp(pos_map, 
                               min=0, 
                               max=self.local_map_size - 1) # in grids, local map frame: x: right, y: down
-        return pos_map
+        return pos_map.long()
+    
     
     def get_planner_pose_inputs(self, e) -> np.ndarray:
         """Get local planner pose inputs for an environment.

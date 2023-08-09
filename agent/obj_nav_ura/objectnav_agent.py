@@ -11,7 +11,7 @@ from torch.nn import DataParallel
 
 import home_robot.utils.pose as pu
 from home_robot.core.abstract_agent import Agent
-from home_robot.core.interfaces import DiscreteNavigationAction, Observations
+from home_robot.core.interfaces import DiscreteNavigationAction, Observations, ContinuousNavigationAction
 from mapping.semantic.categorical_2d_semantic_map_state import (
     Categorical2DSemanticMapState,
 )
@@ -110,7 +110,7 @@ class ObjectNavAgent(Agent):
             turn_angle=config.ENVIRONMENT.turn_angle,
             collision_threshold=config.AGENT.PLANNER.collision_threshold,
             step_size=config.AGENT.PLANNER.step_size,
-            obs_dilation_selem_radius=config.AGENT.PLANNER.obs_dilation_selem_radius,
+            obs_dilation_selem_radius=1,#config.AGENT.PLANNER.obs_dilation_selem_radius,
             goal_dilation_selem_radius=config.AGENT.PLANNER.goal_dilation_selem_radius,
             map_size_cm=config.AGENT.SEMANTIC_MAP.map_size_cm,
             map_resolution=config.AGENT.SEMANTIC_MAP.map_resolution,
@@ -128,8 +128,7 @@ class ObjectNavAgent(Agent):
             config.AGENT.SEMANTIC_MAP.num_sem_categories, device=self.device
         )
 
-        self.goal_update_steps = 50
-        self.force_goal_update_once = False
+        self.goal_update_steps = 100
         self.timesteps = None
         self.timesteps_before_goal_update = None
         self.episode_panorama_start_steps = None
@@ -139,18 +138,37 @@ class ObjectNavAgent(Agent):
         self._use_probability_map = config.AGENT.SEMANTIC_MAP.use_probability_map
         self.probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior
         self.dr_planner = None
-        self._max_render_loc = 100
-        self._uniform_sampling = False
-        self.plan_high_goal = False
-        # self.pointcloud = PointCloudManager(config)
-        # self.show_point = False
+        self._max_render_loc = 150
+        self._uniform_sampling = True
+        # self.plan_high_goal = False
 
-        self.obs_dilation_selem = skimage.morphology.disk(
-            config.AGENT.PLANNER.min_obs_dilation_selem_radius
-        )
+        self.num_high_goals = 1
+        self.ur_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
+        self.max_ur_goal_dist_change = 30 # 1.5 meter
+        self.ur_dist_reach_threshold = 10 # 0.5 meter
+        self.agent_cell_radius = agent_cell_radius
+        self.total_look_around_steps = 360 // config.ENVIRONMENT.hfov + 1
+        self.turn_angle_rad = 2 * np.pi / self.total_look_around_steps
+        self.max_num_changed_cells = (config.ENVIRONMENT.max_depth * 100 / config.AGENT.SEMANTIC_MAP.map_resolution)**2 / 10
+        
+        """
+        UR Exploration:
+            0: go to ur goal (look around point)
+            1: look around
+        
+        Point Goal Navigation:
+            2: object identified, go to object
+        
+        TODO: before successfully identify the object, how we formulate the behavior of taking a close look at likely objects?
+        """
+        self._state = np.ones(self.num_environments) # start with look around
+        self._ur_goal_dist = np.zeros(self.num_environments)
+        self._force_goal_update_once = np.full(self.num_environments, False)
+        self._look_around_steps = np.zeros(self.num_environments)
+        self._num_explored_grids = np.zeros(self.num_environments)
 
-    def force_update_high_goal(self):
-        self.force_goal_update_once = True
+    def force_update_high_goal(self,e):
+        self._force_goal_update_once[e] = True
 
     def init_dr_planner(self,obs):
         """
@@ -219,10 +237,17 @@ class ObjectNavAgent(Agent):
         """
         dones = torch.tensor([False] * self.num_environments)
        
+        # update_global = torch.tensor(
+        #     [
+        #         (self.timesteps_before_goal_update[e] == 0) or (self.force_goal_update_once)
+        #         for e in range(self.num_environments)
+        #     ]
+        # )
+
+        # update the map every single step
         update_global = torch.tensor(
             [
-                (self.timesteps_before_goal_update[e] == 0) or (self.force_goal_update_once)
-                for e in range(self.num_environments)
+                True for e in range(self.num_environments)
             ]
         )
 
@@ -265,53 +290,59 @@ class ObjectNavAgent(Agent):
         self.semantic_map.global_pose = seq_global_pose[:, -1]
         self.semantic_map.lmb = seq_lmb[:, -1]
         self.semantic_map.origins = seq_origins[:, -1]
-
-        ################ UR exploration ################
-        """
-        Reset the high-goal: instead of using frontier exploration, we use the info gain map to plan.
-        """
         
-        # if self.plan_high_goal:
-        #     import time
-        #     start = time.time()
-        #     goal_map = self._get_dense_info_gain_map(0)
-        #     print("time to get info map: ", time.time() - start)
-        # else:
-        #     info_map = None
-
-        ################ UR exploration ################
-        
-        # goal_map = goal_map.squeeze(1).cpu().numpy()
+        goal_map = goal_map.squeeze(1).cpu().numpy()
         found_goal = found_goal.squeeze(1).cpu()
 
+        
+
         for e in range(self.num_environments):
-            # self.semantic_map.update_frontier_map(e, frontier_map[e][0].cpu().numpy())
+            self.semantic_map.update_frontier_map(e, frontier_map[e][0].cpu().numpy())
             # find object goal
             if found_goal[e]:
                 self.semantic_map.update_global_goal_for_env(e, goal_map[e])
+                self._state[e] = 2 # go to object goal
             # if not find object goal and need to update high goal
-            elif self.timesteps_before_goal_update[e] == 0 or self.force_goal_update_once:
+            elif self._check_n_update_need_replan_ur_goal(e):
                 import time
                 start = time.time()
-                pos, info = self._get_dense_info_gain_map(e)
-                if pos is None:
+                local_map_pos, global_pos, info = self._compute_info_gains(e)
+                if local_map_pos is None:
                     continue
                 dist_map = self._get_dist_map(e)
-                goal_map = self._select_goal(dist_map,info,pos)
+                selected_pose, selected_info, selected_idx = self._select_goal(dist_map,info,local_map_pos)
+                self.ur_goal_pose[e] = global_pos[selected_idx] # selected global pos
+                goal_map_e = self._get_goal_map(selected_pose)
                 print("time to get info map: ", time.time() - start)
+                self.semantic_map.update_global_goal_for_env(e, goal_map_e)
+                self._state[e] = 0 # go to the ur goal
+                local_map_pos = local_map_pos[selected_idx]
+                self._ur_goal_dist[e] = dist_map[local_map_pos[0,0],local_map_pos[0,1]].item() # we only consider the first goal
+
+                
+            # not find obj and no need to update high goal
+            # we just need to transform the high goal to account for the robot's movement
+            else:
+                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self.ur_goal_pose[e])
+                goal_map = self._get_goal_map(goal_coords)
                 self.semantic_map.update_global_goal_for_env(e, goal_map)
-                self.timesteps_before_goal_update[e] = self.goal_update_steps
-
-                self.force_goal_update_once = False
-
+                
 
         self.timesteps = [self.timesteps[e] + 1 for e in range(self.num_environments)]
-        self.timesteps_before_goal_update = [
-            self.timesteps_before_goal_update[e] - 1
-            for e in range(self.num_environments)
-        ]
-
         
+        
+        ######################### state transition #########################
+        ### this must be after goal update
+        reach_goal = self._ur_goal_dist <= self.ur_dist_reach_threshold
+        for e in range(self.num_environments):
+            # goto object goal if found goal
+            # otherwise, if reach ur goal, look around
+            # we also force look around at the beginning
+            if not found_goal[e] and (self.timesteps[e] < self.total_look_around_steps or reach_goal[e]):
+                
+                self._state[e] = 1  # look around
+                
+        ####################################################################
 
         if debug_frontier_map:
             import matplotlib.pyplot as plt
@@ -359,6 +390,13 @@ class ObjectNavAgent(Agent):
         self.episode_panorama_start_steps = self.panorama_start_steps
         self.planner.reset()
 
+        self._state = np.ones(self.num_environments)
+        self._ur_goal_dist = np.zeros(self.num_environments)
+        self._force_goal_update_once = np.full(self.num_environments, False)
+        self.ur_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device)
+        self._look_around_steps = np.zeros(self.num_environments)
+        self._num_explored_grids = np.zeros(self.num_environments)
+
     def reset_vectorized_for_env(self, e: int):
         """Initialize agent state for a specific environment."""
         self.timesteps[e] = 0
@@ -367,6 +405,12 @@ class ObjectNavAgent(Agent):
         self.semantic_map.init_map_and_pose_for_env(e)
         self.episode_panorama_start_steps = self.panorama_start_steps
         self.planner.reset()
+        self._state[e] = 1
+        self._ur_goal_dist[e] = 0
+        self._force_goal_update_once[e] = False
+        self.ur_goal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
+        self._look_around_steps[e] = 0
+        self._num_explored_grids[e] = 0
 
     # ---------------------------------------------------------------------
     # Inference methods to interact with the robot or a single un-vectorized
@@ -419,25 +463,32 @@ class ObjectNavAgent(Agent):
         # t2 = time.time()
         # print(f"[Agent] Semantic mapping and policy time: {t2 - t1:.2f}")
 
-        ################# dr planner #################
-       
-
-        # if self.plan_high_goal:
-        #     info_map = self._get_dense_info_gain_map()
-        # else:
-        #     info_map = None
-        ################# end dr-lanner #################
-
         # 3 - Planning
         closest_goal_map = None
         short_term_goal = None
         dilated_obstacle_map = None
-        if planner_inputs[0]["found_goal"]:
-            self.episode_panorama_start_steps = 0
-        if self.timesteps[0] < self.episode_panorama_start_steps:
-            action = DiscreteNavigationAction.TURN_RIGHT
-        elif self.timesteps[0] > self.max_steps:
+        # if planner_inputs[0]["found_goal"]:
+        #     self.episode_panorama_start_steps = 0
+
+        
+     
+        if self.timesteps[0] > self.max_steps:
             action = DiscreteNavigationAction.STOP
+        
+        # state is 1: look around
+        elif self._state[0] == 1:
+            
+            # TODO: we should use more sophisticated policy here. Currently using a simple one
+            action = ContinuousNavigationAction(np.array([0.,0.,self.turn_angle_rad]))
+            # action = DiscreteNavigationAction.TURN_RIGHT
+            self.timesteps_before_goal_update[0] += 1 # make sure we don't update the goal during look around
+            self._look_around_steps[0] += 1
+            if self._look_around_steps[0] >= self.total_look_around_steps:
+                self._state[0] = 0
+                self._look_around_steps[0] = 0
+                self.timesteps_before_goal_update[0] = 0 # relan for the next ur goal
+        
+        # state is 0 or 2: go to point goal
         else:
             (
                 action,
@@ -470,12 +521,29 @@ class ObjectNavAgent(Agent):
         info["entropy"] = self.semantic_map.get_probability_map_entropy(0)
         return action, info
 
-    def _get_dist_map(self,e):
+    #####################################################################
+    # Helper methods for UR exploration
+    #####################################################################
+    def _get_dist_map(self,e:int) -> torch.tensor:
         """
+        Calculate the (local) distance field (in cells) from the current location
+        args:
+            e: environment index
+        returns:
+            dist_map: distance field in cells
+
         """
-        dilated_obstacles = self.semantic_map.get_dialated_obstacle_map_local(e,3)
-        traversible = 1 - dilated_obstacles
+        # NOTE: if we dialate too much, the obstacle may swallow the agent, and the dist map will be wrong
+        dilated_obstacles = self.semantic_map.get_dialated_obstacle_map_local(e,1) 
         
+        traversible = 1 - dilated_obstacles
+        start = self.semantic_map.get_local_coords(e)
+
+        agent_rad = self.agent_cell_radius
+        traversible[
+            start[0] - agent_rad : start[0] + agent_rad + 1,
+            start[1] - agent_rad : start[1] + agent_rad + 1,
+        ] = 1
         traversible = add_boundary(traversible)
         vis_planner = FMMPlanner(traversible)
         curr_loc_map = np.zeros_like(traversible)
@@ -488,33 +556,97 @@ class ObjectNavAgent(Agent):
         fmm_dist = vis_planner.fmm_dist
         fmm_dist = remove_boundary(fmm_dist)
         fmm_dist[dilated_obstacles==1] = 10000
-    
+
         return torch.from_numpy(fmm_dist).float().to(self.device)
     
-    def _select_goal(self,dist_map, infos, locs):
+    def _select_goal(self,dist_map:torch.tensor, 
+                     infos: torch.tensor, 
+                     locs: torch.tensor) -> Tuple[torch.tensor, torch.tensor, torch.tensor]:
         """
         Select the goal with the highest info gain and close to the current location
         args:
             dist_map: distance map, tensor of shape [H,W]
-            infos: info gain map, tensor of shape [N]
-            locs: locations of the goals, tensor of shape [N,2]
+            infos: info gain at each locs, tensor of shape [N]
+            locs: locations of the goals, tensor of shape [N,2] (in local map coords)
         """
         
-        utility = infos / dist_map[locs[:,0],locs[:,1]]**0.5 * 100
+        utility = infos / dist_map[locs[:,0],locs[:,1]]**0.7 * 100
         utility_sorted, idx = torch.sort(utility, descending=True)
         locs = locs[idx]
-        goal_map = torch.zeros_like(dist_map)
-        goal_map[locs[:5,0],locs[:5,1]] = 1        
+        return locs[:self.num_high_goals], utility_sorted[:self.num_high_goals], idx[:self.num_high_goals]
+    
+    def _get_goal_map(self,locs:torch.tensor) -> np.ndarray:
+        """
+        Convert the goal locations to a goal map that can be used by the planner
+        args:
+            locs: locations of the goals, tensor of shape [N,2] (in local map coords)
+        returns:
+            goal_map: goal map, numpy array of shape [H,W]
+        """
+
+        goal_map = torch.zeros([self.semantic_map.local_map_size,self.semantic_map.local_map_size])
+        goal_map[locs[:,0],locs[:,1]] = 1        
+
         return goal_map.cpu().numpy()
 
-    def _get_dense_info_gain_map(self,e):
+    def _check_n_update_need_replan_ur_goal(self, e:int) -> bool:
         """
-        return the dense info gain map
+        decide whether to replan. We also update ur_goal_dist here.
+        Replan if:
+            1. if the selected goal is occupaid by obstacles
+            2. if the map changes too much (so there could be more interesting locs to explore?)
+            3. if the distance to selected goal changed too much, because of newly 
+            observed obstacles. (so better to explore nearby first?)
+            4. if force_update or timesteps_before_goal_update is reached, or we have traveled too far
+        
+        """
+        # no need to replan if we are looking around
+        if self._state[e] == 1:
+            return False
+        
+        replan = False
+        # case 4
+        if self.timesteps_before_goal_update[e] == 0 or self._force_goal_update_once[e]:
+            replan = True
+        
+        # case 2
+        num_exp_grid = self.semantic_map.get_num_explored_cells(e)
+        num_changed_cells = num_exp_grid - self._num_explored_grids[e]
+        if num_changed_cells > self.max_num_changed_cells:
+            replan = True
+        
+        # case 1, 3
+        goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self.ur_goal_pose[e])
+        dist_map = self._get_dist_map(e)
+        goal_dist = dist_map[goal_coords[0,0],goal_coords[0,1]].item() # we only consider the first goal
+        
+        # if new goal dist changed too much, replan
+        if ( goal_dist - self._ur_goal_dist[e] ) > self.max_ur_goal_dist_change: 
+            replan = True
+
+        # update internal states
+        if replan:
+            self.timesteps_before_goal_update[e] = self.goal_update_steps
+            self._force_goal_update_once[e] = False
+            self._num_explored_grids[e] = num_exp_grid
+            
+        else:
+            self._ur_goal_dist[e] = goal_dist
+            # timestep to replan for the ur goal
+            self.timesteps_before_goal_update = [
+                self.timesteps_before_goal_update[e] - 1
+                for e in range(self.num_environments)
+            ]
+
+        return replan
+    def _compute_info_gains(self,e):
+        """
+        compute the info gains for 
         
         """
         exp_pos_all = self.semantic_map.get_explored_locs(e) # [N, 2]
         if exp_pos_all.shape[0] == 0:
-            return None, None
+            return None, None, None
         n_p = exp_pos_all.shape[0]
         print(f'Num of points: {n_p}')
         if n_p > self._max_render_loc:
@@ -540,6 +672,7 @@ class ObjectNavAgent(Agent):
         local_exp_pos_map_frame = self.semantic_map.hab_world_to_map_local_frame(e, exp_pos).long()
         local_exp_pos_map_frame = local_exp_pos_map_frame[idx] # sorted
         local_exp_pos_map_frame_sorted = local_exp_pos_map_frame.clone()
+        exp_pos_sorted = exp_pos[idx]
 
         if debug_info_gain:
         ##################### visualize using global map
@@ -575,7 +708,7 @@ class ObjectNavAgent(Agent):
             local_goal_map[local_exp_pos_map_frame[:,0], local_exp_pos_map_frame[:,1]] = 1.0
 
 
-        return local_exp_pos_map_frame_sorted, info_sorted
+        return local_exp_pos_map_frame_sorted, exp_pos_sorted, info_sorted
 
     def _preprocess_obs(self, obs: Observations):
         """Take a home-robot observation, preprocess it to put it into the correct format for the

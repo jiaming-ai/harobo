@@ -55,7 +55,7 @@ class DRPlanner(nn.Module):
         self.device = device
         self.camera_tilt = torch.tensor(camera_tilt)
         # TODO: how to correctly set this? need to be tight
-        self.camera_height = torch.tensor(config.ENVIRONMENT.camera_height + 0.18)
+        self.camera_height = torch.tensor(config.ENVIRONMENT.camera_height + 0.16)
         self.camera_hfov = config.ENVIRONMENT.hfov
         self.screen_width = config.ENVIRONMENT.frame_width
         self.screen_height = config.ENVIRONMENT.frame_height
@@ -295,7 +295,7 @@ class DRPlanner(nn.Module):
                                             max_n_hits=5,
                                             T=T,)
         c_s, i_s = self._process_rendered_info(images.squeeze(-1))
-        info_at_locs = (c_s+i_s).view(N, n_view_per_loc).sum(-1) # [N_locs]
+        info_at_locs = (c_s+10*i_s).view(N, n_view_per_loc).sum(-1) # [N_locs]
 
         
 
