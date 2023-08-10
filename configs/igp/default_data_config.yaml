@@ -1,0 +1,5 @@
+
+
+type: "voxel_dense_map"
+map_size: 960
+voxel_height: 34

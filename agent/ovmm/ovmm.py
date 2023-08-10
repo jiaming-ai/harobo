@@ -1,3 +1,5 @@
+# Adapted from https://github.com/facebookresearch/home-robot
+
 from datetime import datetime
 from enum import IntEnum, auto
 from typing import Any, Dict, Optional, Tuple
@@ -155,7 +157,7 @@ class OVMMAgent(ObjectNavAgent):
 
     def reset_vectorized(self, episodes=None):
         """Initialize agent state."""
-        super().reset_vectorized()
+        super().reset_vectorized(episodes)
 
         if episodes is None:
             now = datetime.now()
@@ -198,7 +200,7 @@ class OVMMAgent(ObjectNavAgent):
             self.place_policy.reset()
         if self.config.AGENT.SKILLS.PICK.type == "heuristic":
             self.pick_policy.reset()
-        super().reset_vectorized_for_env(e)
+        super().reset_vectorized_for_env(e, episode)
         self.planner.set_vis_dir(
             episode.scene_id.split("/")[-1].split(".")[0], episode.episode_id
         )

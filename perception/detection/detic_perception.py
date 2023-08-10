@@ -1,3 +1,5 @@
+# Adapted from https://github.com/facebookresearch/home-robot
+
 import argparse
 import pathlib
 import sys

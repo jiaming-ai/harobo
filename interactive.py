@@ -48,14 +48,39 @@ from utils.visualization import (
     visualize_pred,
     save_img_tensor)
 
-def create_ovmm_env_fn(config,eval_eps=None):
+def create_ovmm_env_fn(config,args):
     """Create habitat environment using configsand wrap HabitatOpenVocabManipEnv around it. This function is used by VectorEnv for creating the individual environments"""
-    habitat_config = config.habitat
-    dataset = make_dataset(habitat_config.dataset.type, config=habitat_config.dataset)
-    if eval_eps is not None:
+    
+    if args.collect_data:
+        splits = ['train','val','test']
+        OmegaConf.set_readonly(config, False)
+        # config.habitat.dataset.split = 'train'
+        OmegaConf.set_readonly(config, True)
+
+        habitat_config = config.habitat
+        dataset = make_dataset(habitat_config.dataset.type, config=habitat_config.dataset)
+    
+        # we select a subset of episodes to generate the dataset
+        eps_select = {}
+        eps_list = []
+        for eps in dataset.episodes:
+            scene_id = eps.scene_id
+            if scene_id not in eps_select:
+                eps_select[scene_id] = 0
+            if eps_select[scene_id] < 12:
+                eps_select[scene_id] += 1
+                eps_list.append(eps)
+        dataset.episodes = eps_list
+
+    else:
+        habitat_config = config.habitat
+        dataset = make_dataset(habitat_config.dataset.type, config=habitat_config.dataset)
+
+    if args.eval_eps is not None:
         eval_eps = [f'{e}' for e in eval_eps]
         eps_list = [eps for eps in dataset.episodes if eps.episode_id in eval_eps]
         dataset.episodes = eps_list
+
     env_class_name = _get_env_name(config)
     env_class = get_env_class(env_class_name)
     habitat_env = env_class(config=habitat_config, dataset=dataset)
@@ -97,7 +122,7 @@ class InteractiveEvaluator():
 
     def eval(self, num_episodes_per_env=10):
      
-        self.env = create_ovmm_env_fn(self.config,self.args.eval_eps)
+        self.env = create_ovmm_env_fn(self.config,self.args)
         agent = OVMMAgent(
             config=self.config,
             device_id=self.gpu_id,
@@ -233,10 +258,10 @@ class InteractiveEvaluator():
                     draw_ob = np.concatenate([draw_ob, info_map], axis=1)
                 # draw
                 user_action = self.viewer.imshow(
-                    draw_ob, delay=0 if self.args.interactive else 2
+                    draw_ob, delay=0 if not self.args.no_interactive else 2
                 )
 
-            if self.args.interactive and user_action is not None:
+            if not self.args.no_interactive and user_action is not None:
                 if user_action['info'] == "plan_high":
                     agent.force_update_high_goal(0)
                 action = user_action['action']
@@ -292,10 +317,10 @@ if __name__ == "__main__":
         default=False,
     )
     parser.add_argument(
-        "--interactive",
+        "--no_interactive",
         action="store_true",
         help="Whether to render the environment or not",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--eval_eps",
@@ -304,14 +329,24 @@ if __name__ == "__main__":
         default=None,
     )
 
+    parser.add_argument(
+        "--collect_data",
+        help="wheter to collect data for training",
+        action="store_true",
+        default=False,
+    )
+
 
     print("Arguments:")
     args = parser.parse_args()
+    args.collect_data = True
     print(json.dumps(vars(args), indent=4))
     print("-" * 100)
 
     print("Configs:")
-    config = get_habitat_config(args.habitat_config_path, overrides=args.opts)
+    
+    overrides = []
+    config = get_habitat_config(args.habitat_config_path, overrides=overrides)
     baseline_config = OmegaConf.load(args.baseline_config_path)
     config = DictConfig({**config, **baseline_config})
     evaluator = InteractiveEvaluator(config,args.gpu_id,args=args)

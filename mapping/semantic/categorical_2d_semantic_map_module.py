@@ -1,7 +1,6 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
+# Adapted from https://github.com/facebookresearch/home-robot
+
+
 from typing import Tuple, Optional, Dict, List
 from torch.nn.utils.rnn import pad_sequence
 import cv2
@@ -698,7 +697,13 @@ class Categorical2DSemanticMapModule(nn.Module):
         current_map[:, MC.PROBABILITY_MAP, :, :] = torch.sum(maps[:, :, MC.PROBABILITY_MAP,:, :], 1)
         current_map[:, MC.PROBABILITY_MAP, :, :] = torch.clamp(current_map[:, MC.PROBABILITY_MAP, :, :], min=-10, max=10)
         goal_idx = MC.NON_SEM_CHANNELS + 1 # goal object
-        confident_no_obj = (current_map[:, MC.BEEN_CLOSE_MAP] == 1) & (current_map[:, goal_idx] < self.confident_threshold)
+
+        # NOTE: here we mark all areas that have been close to the goal object as confident
+        # we assume if we have been close to the object, we can identify the object, and update the semantic correctly
+        # If we don't go to goal, then most likely the object is not the goal object on the specified receptacle
+        
+        # confident_no_obj = (current_map[:, MC.BEEN_CLOSE_MAP] == 1) & (current_map[:, goal_idx] < self.confident_threshold)
+        confident_no_obj = current_map[:, MC.BEEN_CLOSE_MAP] == 1
         current_map[:, MC.PROBABILITY_MAP][confident_no_obj] = -10 
 
         ############### end Bayesian update ###############

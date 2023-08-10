@@ -1,7 +1,5 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
+# Adapted from https://github.com/facebookresearch/home-robot
+
 import numpy as np
 import torch
 
@@ -262,6 +260,7 @@ class Categorical2DSemanticMapState:
         """Get global point cloud for an environment.
         returns:
             pc: tensor of shape [N, 3] in habitat world frame (x: forward, y: left, z: up), unit: meter
+            feat: tensor of shape [N, 1], prob of occupancy [0, 1]
            
         """
         voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
@@ -272,8 +271,19 @@ class Categorical2DSemanticMapState:
         pc[:,:2] -= self.global_map_size / 2 
         pc = pc * self.resolution  # [N, 3] 
         
+        feat = torch.sigmoid(feat)
+        
         return pc / 100, feat
 
+    def get_global_pointcloud_flat_idx(self, e ) -> torch.tensor:
+        """
+        returns: tensor if shape [N, 1] of flat indices of global point cloud, type is long
+        """
+        voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
+        voxel = voxel.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
+        idx = torch.nonzero(~voxel.isnan()) # [N, 3]
+        return idx[:,0] * self.global_map_size * self.global_map_size + idx[:,1] * self.global_map_size + idx[:,2]
+        
     def get_num_points(self, e) -> int:
         """Get number of points in global point cloud for an environment."""
         voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]

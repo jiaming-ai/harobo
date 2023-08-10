@@ -1,10 +1,8 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
+# Adapted from https://github.com/facebookresearch/home-robot
 
 from typing import Any, Dict, List, Tuple
-
+from datetime import datetime
+import os
 import numpy as np
 import torch
 from torch.nn import DataParallel
@@ -49,8 +47,8 @@ from utils.visualization import (
     visualize_gt,
     visualize_pred,
     save_img_tensor)
-from utils.geometry.points_utils import show_points, show_points_with_logit, get_pc_from_voxel, show_points_with_prob
-from utils.geometry.urp_dr import DRPlanner
+from .urp.points_utils import show_points, show_points_with_logit, get_pc_from_voxel, show_points_with_prob
+from .urp.urp_dr import DRPlanner
 from pytorch3d.ops import sample_farthest_points
 
 
@@ -63,7 +61,7 @@ from navigation_planner.discrete_planner import add_boundary, remove_boundary
 
 # For visualizing exploration issues
 debug_frontier_map = False
-debug_info_gain = True
+debug_info_gain = False
 
 class ObjectNavAgent(Agent):
     """Simple object nav agent based on a 2D semantic map"""
@@ -166,6 +164,9 @@ class ObjectNavAgent(Agent):
         self._force_goal_update_once = np.full(self.num_environments, False)
         self._look_around_steps = np.zeros(self.num_environments)
         self._num_explored_grids = np.zeros(self.num_environments)
+        self._info_gain_alpha = 10 # controls how much we want to prioritize checking out promising grids
+        self.save_info_gain_data = True # for training
+       
 
     def force_update_high_goal(self,e):
         self._force_goal_update_once[e] = True
@@ -338,10 +339,12 @@ class ObjectNavAgent(Agent):
             # goto object goal if found goal
             # otherwise, if reach ur goal, look around
             # we also force look around at the beginning
-            if not found_goal[e] and (self.timesteps[e] < self.total_look_around_steps or reach_goal[e]):
-                
+            if self._state[e] == 0 \
+                and (not found_goal[e]) \
+                and (self.timesteps[e] < self.total_look_around_steps or reach_goal[e]):
                 self._state[e] = 1  # look around
-                
+
+            
         ####################################################################
 
         if debug_frontier_map:
@@ -381,7 +384,7 @@ class ObjectNavAgent(Agent):
 
         return planner_inputs, vis_inputs
 
-    def reset_vectorized(self):
+    def reset_vectorized(self,episodes=None):
         """Initialize agent state."""
         self.timesteps = [0] * self.num_environments
         self.timesteps_before_goal_update = [0] * self.num_environments
@@ -397,7 +400,20 @@ class ObjectNavAgent(Agent):
         self._look_around_steps = np.zeros(self.num_environments)
         self._num_explored_grids = np.zeros(self.num_environments)
 
-    def reset_vectorized_for_env(self, e: int):
+        if self.save_info_gain_data:
+            if episodes is None: 
+                now = datetime.now()
+                self.save_info_gain_data_dir = "data/info_gain/" + now.strftime("%Y_%m_%d_%H_%M_%S")
+                
+            else:
+                scene_id = episodes[0].scene_id.split("/")[-1].split(".")[0]
+                eps_id = episodes[0].episode_id
+                self.save_info_gain_data_dir = f'data/info_gain/{scene_id}/{eps_id}'
+                
+            os.makedirs(self.save_info_gain_data_dir, exist_ok=True)
+                
+
+    def reset_vectorized_for_env(self, e: int, episode=None):
         """Initialize agent state for a specific environment."""
         self.timesteps[e] = 0
         self.timesteps_before_goal_update[e] = 0
@@ -411,6 +427,18 @@ class ObjectNavAgent(Agent):
         self.ur_goal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
         self._look_around_steps[e] = 0
         self._num_explored_grids[e] = 0
+
+        if self.save_info_gain_data:
+            if episode is None:
+                now = datetime.now()
+                self.save_info_gain_data_dir = "data/info_gain/" + now.strftime("%Y_%m_%d_%H_%M_%S")
+                
+            else:
+                scene_id = episode.scene_id.split("/")[-1].split(".")[0]
+                eps_id = episode.episode_id
+                self.save_info_gain_data_dir = f'data/info_gain/{scene_id}/{eps_id}'
+                
+            os.makedirs(self.save_info_gain_data_dir, exist_ok=True)
 
     # ---------------------------------------------------------------------
     # Inference methods to interact with the robot or a single un-vectorized
@@ -481,11 +509,12 @@ class ObjectNavAgent(Agent):
             # TODO: we should use more sophisticated policy here. Currently using a simple one
             action = ContinuousNavigationAction(np.array([0.,0.,self.turn_angle_rad]))
             # action = DiscreteNavigationAction.TURN_RIGHT
-            self.timesteps_before_goal_update[0] += 1 # make sure we don't update the goal during look around
+            # self.timesteps_before_goal_update[0] += 1 # make sure we don't update the goal during look around
             self._look_around_steps[0] += 1
+            # we must change state directly here, otherwise the urp planner will not be called
             if self._look_around_steps[0] >= self.total_look_around_steps:
-                self._state[0] = 0
-                self._look_around_steps[0] = 0
+                self._state[0] = 0 # go to ur goal
+                self._look_around_steps[0] = 0 # reset look around steps
                 self.timesteps_before_goal_update[0] = 0 # relan for the next ur goal
         
         # state is 0 or 2: go to point goal
@@ -535,29 +564,33 @@ class ObjectNavAgent(Agent):
         """
         # NOTE: if we dialate too much, the obstacle may swallow the agent, and the dist map will be wrong
         dilated_obstacles = self.semantic_map.get_dialated_obstacle_map_local(e,1) 
-        
-        traversible = 1 - dilated_obstacles
-        start = self.semantic_map.get_local_coords(e)
-
         agent_rad = self.agent_cell_radius
-        traversible[
-            start[0] - agent_rad : start[0] + agent_rad + 1,
-            start[1] - agent_rad : start[1] + agent_rad + 1,
-        ] = 1
-        traversible = add_boundary(traversible)
-        vis_planner = FMMPlanner(traversible)
-        curr_loc_map = np.zeros_like(traversible)
 
-        # Update our location for finding the closest goal
-        start = self.semantic_map.get_local_coords(e)
-        curr_loc_map[start[0], start[1]] = 1
-        # curr_loc_map[short_term_goal[0], short_term_goal]1]] = 1
-        vis_planner.set_multi_goal(curr_loc_map)
-        fmm_dist = vis_planner.fmm_dist
-        fmm_dist = remove_boundary(fmm_dist)
-        fmm_dist[dilated_obstacles==1] = 10000
+        # we need to make sure the agent is not inside the obstacle
+        while True:
+            traversible = 1 - dilated_obstacles
+            start = self.semantic_map.get_local_coords(e)
 
-        return torch.from_numpy(fmm_dist).float().to(self.device)
+            agent_rad += 1
+            traversible[
+                start[0] - agent_rad : start[0] + agent_rad + 1,
+                start[1] - agent_rad : start[1] + agent_rad + 1,
+            ] = 1
+            traversible = add_boundary(traversible)
+            vis_planner = FMMPlanner(traversible)
+            curr_loc_map = np.zeros_like(traversible)
+
+            # Update our location for finding the closest goal
+            start = self.semantic_map.get_local_coords(e)
+            curr_loc_map[start[0], start[1]] = 1
+            # curr_loc_map[short_term_goal[0], short_term_goal]1]] = 1
+            vis_planner.set_multi_goal(curr_loc_map)
+            fmm_dist = vis_planner.fmm_dist
+            fmm_dist = remove_boundary(fmm_dist)
+            fmm_dist[dilated_obstacles==1] = 10000
+
+            if np.unique(fmm_dist).shape[0] > 10:
+                return torch.from_numpy(fmm_dist).float().to(self.device)
     
     def _select_goal(self,dist_map:torch.tensor, 
                      infos: torch.tensor, 
@@ -639,6 +672,9 @@ class ObjectNavAgent(Agent):
             ]
 
         return replan
+
+ 
+        
     def _compute_info_gains(self,e):
         """
         compute the info gains for 
@@ -648,7 +684,7 @@ class ObjectNavAgent(Agent):
         if exp_pos_all.shape[0] == 0:
             return None, None, None
         n_p = exp_pos_all.shape[0]
-        print(f'Num of points: {n_p}')
+        print(f'Num of locations: {n_p}')
         if n_p > self._max_render_loc:
             if self._uniform_sampling:
                 rng = np.random.default_rng()
@@ -665,18 +701,37 @@ class ObjectNavAgent(Agent):
         points, feats = self.semantic_map.get_global_pointcloud(e) # [P, 3], [P, 1]
         points = points.unsqueeze(0) # [1, P, 3]
         feats = feats.unsqueeze(0) # [1, P, 1]
-        info_at_locs = self.dr_planner.cal_info_gains(points,feats,exp_pos)
+        c_s, i_s = self.dr_planner.cal_info_gains(points,feats,exp_pos)
 
+        info_at_locs = (c_s + self._info_gain_alpha * i_s) # [N_locs]
         
         info_sorted, idx = torch.sort(info_at_locs, descending=True)
-        local_exp_pos_map_frame = self.semantic_map.hab_world_to_map_local_frame(e, exp_pos).long()
+        local_exp_pos_map_frame = self.semantic_map.hab_world_to_map_local_frame(e, exp_pos)
         local_exp_pos_map_frame = local_exp_pos_map_frame[idx] # sorted
         local_exp_pos_map_frame_sorted = local_exp_pos_map_frame.clone()
         exp_pos_sorted = exp_pos[idx]
 
+        if self.save_info_gain_data:
+            if '_last_save_num_explored_grids' not in self.__dict__:
+                # assume single env
+                self._last_save_num_explored_grids = 0
+
+            num_exp_grid = self.semantic_map.get_num_explored_cells(e)
+            num_changed_cells = abs(num_exp_grid - self._last_save_num_explored_grids)
+            # we only save the data if the number of changed cells is larger than 100
+            # this is to avoid saving same data
+            if num_changed_cells > 100:
+                self._last_save_num_explored_grids = num_exp_grid
+                global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos).cpu()
+                point_idx = self.semantic_map.get_global_pointcloud_flat_idx(e).squeeze(-1).cpu().to(torch.int32)
+                p = feats[0].squeeze(-1).cpu().to(torch.float16) # save space
+                torch.save([point_idx, p, global_exp_pos_map_frame, c_s.cpu(),i_s.cpu()],
+                        self.save_info_gain_data_dir+f'/{self.timesteps[0]}.pt')
+
+
         if debug_info_gain:
         ##################### visualize using global map
-            global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos).long()
+            global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos)
             global_exp_pos_map_frame = global_exp_pos_map_frame[idx] # sorted
 
             global_map_color = torch.zeros_like(self.semantic_map.global_map[e,0])  # [H, W]
