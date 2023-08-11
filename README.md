@@ -4,77 +4,15 @@
 
 ### Installation
 
-Install home-robot by following instructions at [here](https://github.com/facebookresearch/home-robot) for the latest version. Or follow the instructions below for the version we used.
-
-For detic, it seems that the default installation works fine. (need to install detic requirements)
-
-#### 1. Create Your Environment
-
-```
-mamba env create -n home-robot -f src/home_robot/environment.yml
-
-conda activate home-robot
-```
-
-This should install pytorch; if you run into trouble, you may need to edit the installation to make sure you have the right CUDA version. See the [pytorch install notes](docs/install_pytorch.md) for more.
-
-
-
-#### 2. Install Home Robot Packages
-```
-conda activate home-robot
-
-# Install the core home_robot package
-python -m pip install -e src/home_robot
-
-```
-
-#### 3. Download third-party packages
-```
-git submodule update --init --recursive src/home_robot/home_robot/perception/detection/detic/Detic src/third_party/detectron2 src/third_party/contact_graspnet
-```
-
-#### 5. Install Detic
-
-Install [detectron2](https://detectron2.readthedocs.io/tutorials/install.html). 
-```
-python -m pip install -e detectron2
-```
-
-If you installed our default environment above, you may need to [download CUDA11.7](https://developer.nvidia.com/cuda-11-7-0-download-archive).
-
-
-Download Detic checkpoint as per the instructions [on the Detic github page](https://github.com/facebookresearch/Detic):
-
-```bash
-cd $HOME_ROBOT_ROOT/src/home_robot/home_robot/perception/detection/detic/Detic/
-mkdir models
-wget https://dl.fbaipublicfiles.com/detic/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth -O models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth --no-check-certificate
-```
-
-You should be able to run the Detic demo script as per the Detic instructions to verify your installation was correct:
-```bash
-wget https://web.eecs.umich.edu/~fouhey/fun/desk/desk.jpg
-python demo.py --config-file configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml --input desk.jpg --output out2.jpg --vocabulary custom --custom_vocabulary headphone,webcam,paper,coffe --confidence-threshold 0.3 --opts MODEL.WEIGHTS models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
-```
-
-#### 6. Download pretrained skills
-```
-mkdir -p data/checkpoints
-cd data/checkpoints
-wget https://dl.fbaipublicfiles.com/habitat/data/baselines/v1/ovmm_baseline_home_robot_challenge_2023.zip
-unzip ovmm_baseline_home_robot_challenge_2023.zip
-cd ../../
-```
 
 # first checkout harobo and home-robot
 ```bash
-git clone https://github.com/facebookresearch/home-robot.git
+git clone --recurse-submodule https://github.com/facebookresearch/home-robot.git
 cd home-robot
-git reset --hard 5e9fdc7b2e88899061eecf03ec68f35607f772d5
+git reset --hard 5e9fdc7b2e88899061eecf03ec68f35607f772d5 # checkout to the commit that works with existing code
 cd ..
 
-git clone https://github.com/jiaming-robot-learning/harobo.git
+git clone --recurse-submodule https://github.com/jiaming-robot-learning/harobo.git
 ```
 
 # first create a conda environment
@@ -105,7 +43,7 @@ python -m pip install -e src/home_robot_sim
 python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
 
 # checkout code, note the --recurse-submodule flag
-git clone --recurse-submodule https://github.com/jiaming-robot-learning/harobo.git
+<!-- git clone --recurse-submodule https://github.com/jiaming-robot-learning/harobo.git -->
 
 # install requirements for detic
 cd .. # go to the workspace directory
