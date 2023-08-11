@@ -6,6 +6,7 @@
 
 
 # first checkout harobo and home-robot
+
 ```bash
 git clone --recurse-submodule https://github.com/facebookresearch/home-robot.git
 cd home-robot
@@ -16,6 +17,7 @@ git clone --recurse-submodule https://github.com/jiaming-robot-learning/harobo.g
 ```
 
 # first create a conda environment
+```bash
 mamba env create -p ./.venv -f harobo/environment.yml
 conda activate ./.venv
 # mamba install pytorch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 pytorch-cuda=11.7 -c pytorch -c nvidia
@@ -35,6 +37,7 @@ python -m pip install -e src/home_robot
 mamba env update -f src/home_robot_sim/environment.yml 
 
 # install habitat-lab and baseline
+git submodule update --init --recursive src/third_party/habitat-lab # if not using --recurse-submodule
 python -m pip install -e src/third_party/habitat-lab/habitat-lab
 python -m pip install -e src/third_party/habitat-lab/habitat-baselines
 python -m pip install -e src/home_robot_sim
@@ -43,7 +46,7 @@ python -m pip install -e src/home_robot_sim
 python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
 
 # checkout code, note the --recurse-submodule flag
-<!-- git clone --recurse-submodule https://github.com/jiaming-robot-learning/harobo.git -->
+# git clone --recurse-submodule https://github.com/jiaming-robot-learning/harobo.git
 
 # install requirements for detic
 cd .. # go to the workspace directory
