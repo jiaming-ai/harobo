@@ -14,10 +14,14 @@ data_config = load_config("configs/igp/default_data_config.yaml")
 
 dataloader = get_dataloader(data_dir="data/info_gain",
                             split="train",
-                            batch_size=10,
+                            batch_size=32,
                             num_workers=0,
                             data_config=data_config,
+                            device = "cuda:1",
                             shuffle=True)
-
+import time
+start = time.time()
 for batch in dataloader:
-    print(batch.keys())
+    pass
+
+print(f'loading time per batch: {(time.time() - start) / len(dataloader)}') 

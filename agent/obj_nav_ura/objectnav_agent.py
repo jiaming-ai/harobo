@@ -701,8 +701,8 @@ class ObjectNavAgent(Agent):
         points, feats = self.semantic_map.get_global_pointcloud(e) # [P, 3], [P, 1]
         points = points.unsqueeze(0) # [1, P, 3]
         feats = feats.unsqueeze(0) # [1, P, 1]
-        c_s, i_s = self.dr_planner.cal_info_gains(points,feats,exp_pos)
-
+        result = self.dr_planner.cal_info_gains(points,feats,exp_pos)
+        c_s, i_s = result['coverage_info'], result['promising_info'] # [N_locs], [N_locs]
         info_at_locs = (c_s + self._info_gain_alpha * i_s) # [N_locs]
         
         info_sorted, idx = torch.sort(info_at_locs, descending=True)
@@ -725,9 +725,10 @@ class ObjectNavAgent(Agent):
                 global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos).cpu()
                 point_idx = self.semantic_map.get_global_pointcloud_flat_idx(e).squeeze(-1).cpu().to(torch.int32)
                 p = feats[0].squeeze(-1).cpu().to(torch.float16) # save space
-                torch.save([point_idx, p, global_exp_pos_map_frame, c_s.cpu(),i_s.cpu()],
+                c_s, i_s = result['raw_c_s'].cpu(), result['raw_i_s'].cpu() # [N_locs * len(theta_list))]
+                theta_tensor = torch.tensor(result['theta_list'])
+                torch.save([point_idx, p, global_exp_pos_map_frame, c_s,i_s,theta_tensor],
                         self.save_info_gain_data_dir+f'/{self.timesteps[0]}.pt')
-
 
         if debug_info_gain:
         ##################### visualize using global map

@@ -54,7 +54,8 @@ def create_ovmm_env_fn(config,args):
     if args.collect_data:
         splits = ['train','val','test']
         OmegaConf.set_readonly(config, False)
-        # config.habitat.dataset.split = 'train'
+        config.habitat.dataset.split = 'train'
+        config.habitat.task.episode_init=False
         OmegaConf.set_readonly(config, True)
 
         habitat_config = config.habitat
@@ -339,7 +340,7 @@ if __name__ == "__main__":
 
     print("Arguments:")
     args = parser.parse_args()
-    args.collect_data = True
+    # args.collect_data = True
     print(json.dumps(vars(args), indent=4))
     print("-" * 100)
 

@@ -1,5 +1,14 @@
 
 
 type: "voxel_dense_map"
+
+# voxel_dense_map
 map_size: 960
+xy_scale: 2
+z_scale: 2
 voxel_height: 34
+filter_height_max: 32
+filter_height_min: 3
+random_rotate: True
+crop_size: 320
+filter_height: True

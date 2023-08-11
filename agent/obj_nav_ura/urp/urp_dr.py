@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 
 # Util function for loading point clouds|
 import numpy as np
-
+import random
 import torch
 import home_robot.utils.depth as du
 from home_robot.utils import rotation as ru
@@ -268,7 +268,8 @@ class DRPlanner(nn.Module):
         points = convert_to_pytorch3d_frame(points) *10 # pt3d world frame
         # feats = torch.sigmoid(feats) # [1, P, 1], converts to probs
 
-        R, T, n_view_per_loc = self.get_panoramic_camera_matrix(agent_pose) # [bs, 3, 3], [bs, 3]
+        R, T, theta_list = self.get_panoramic_camera_matrix(agent_pose) # [bs, 3, 3], [bs, 3]
+        n_view_per_loc = len(theta_list)
         N = agent_pose.shape[0] # this is the number of locations
         bs = R.shape[0] # this is the total number of views needed to be rendered
 
@@ -295,10 +296,9 @@ class DRPlanner(nn.Module):
                                             max_n_hits=5,
                                             T=T,)
         c_s, i_s = self._process_rendered_info(images.squeeze(-1))
-        # info_at_locs = (c_s+10*i_s).view(N, n_view_per_loc).sum(-1) # [N_locs]
 
-        c_s = c_s.view(N, n_view_per_loc).sum(-1) # [N_locs]
-        i_s = i_s.view(N, n_view_per_loc).sum(-1) # [N_locs]
+        c_s_sum = c_s.view(N, n_view_per_loc).sum(-1) # [N_locs]
+        i_s_sum = i_s.view(N, n_view_per_loc).sum(-1) # [N_locs]
 
         if self.visualize:
             images, rets = self.renderer.forward(pc,
@@ -323,7 +323,14 @@ class DRPlanner(nn.Module):
                 for j in range(m):
                     axes[i,j].imshow(images[i*m+j,...,0].detach().cpu().numpy())
 
-        return c_s, i_s 
+        result = {
+            'coverage_info': c_s_sum,
+            'promising_info': i_s_sum,
+            'theta_list': theta_list,
+            'raw_c_s': c_s,
+            'raw_i_s': i_s,
+        }
+        return result
     
     # def get_training_data(self, points, feats, agent_pose, n_views=5):
     #     """ generate training data for the network
@@ -414,19 +421,25 @@ class DRPlanner(nn.Module):
         """
         Generate camera matrics for panoramic rendering.
         Note: the camera frame is defined in the hab frame.
-
+        We randomly start from a random angle, and then rotate the camera frame by the camera hfov
         Args:
             agent_pose: tensor of size [N, 3] of [x, y, theta] or [N, 2] of [x, y]
         """
         # TODO: how to solve the overlap problem?
-        n_view_per_loc = int(360 / self.camera_hfov) + 1
+        n_view_per_loc = int(360 / self.camera_hfov) + 1 # 9
         bs = agent_pose.shape[0]
      
         R_list = []
         T_list = []
-        fov_rad = self.camera_hfov * np.pi / 180
+        turn_rad = np.pi * 2 / n_view_per_loc # 40 deg
+        bin_rad = np.pi * 2 / 36 #  10 deg
+
+        random_start_bin_num = random.randint(0,turn_rad/bin_rad-1) # [0, 3]
+        random_start_rad = random_start_bin_num * bin_rad # [0, 30 deg]
+        theta_list = []
         for i in range(n_view_per_loc):
-            theta = torch.tensor([i * fov_rad]).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [1,1]
+            theta_list.append(random_start_rad + i * turn_rad)
+            theta = torch.tensor([random_start_rad + i * turn_rad]).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [1,1]
             
             agent_pose = torch.cat([agent_pose[:,:2], theta], dim=1) # [N, 3]
             R, T = self.get_camera_matrix(agent_pose)
@@ -436,7 +449,7 @@ class DRPlanner(nn.Module):
         R = torch.stack(R_list, dim=1).view(-1, 3, 3) # [bs*n_view_per_loc, 3, 3]
         T = torch.stack(T_list, dim=1).view(-1, 3)
 
-        return R, T, n_view_per_loc
+        return R, T, theta_list, 
     
 
     # def get_random_camera_matrix(self, agent_pose: torch.tensor, n_view_per_loc: int) -> torch.tensor:

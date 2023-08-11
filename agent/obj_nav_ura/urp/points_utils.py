@@ -76,13 +76,27 @@ def show_points_with_prob(points,feat):
     })
     fig.show()
 
-def show_voxel(voxel_tensor):
+def show_voxel_map(voxel_tensor):
     """
     voxel_tensor: B x Z x X x Y
     """
     
     voxel = voxel_tensor[0].permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
     idx = torch.nonzero(~voxel.isnan()) # [N, 3]
+    feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
+    pc = idx.float() # [N, 3]
+    # pc[:,:2] -= self.global_map_size / 2 
+    # pc = pc * self.resolution + self.resolution / 2 # [N, 3] 
+    # pc = pc / 100 # [N, 3] in meter    
+
+    show_points_with_prob(pc,feat)
+
+def show_voxel_dataset(voxel):
+    """
+    voxel_tensor:  X x Y x Z
+    """
+    
+    idx = torch.nonzero(voxel>0) # [N, 3]
     feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
     pc = idx.float() # [N, 3]
     # pc[:,:2] -= self.global_map_size / 2 

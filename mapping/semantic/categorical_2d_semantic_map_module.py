@@ -442,7 +442,8 @@ class Categorical2DSemanticMapModule(nn.Module):
             score_relevence = scores * relevance[classes] # [B, total_num_instance]
             prob_feat = torch.einsum('bnhw,bn->bnhw',masks, score_relevence) # [B, N, H, W]
             prob_feat,_ = torch.max(prob_feat, dim=1, keepdim=True) # [B,1, H, W]
-            prob_feat = nn.AvgPool2d(self.du_scale)(prob_feat).view(
+            # we use maxpool2d instead of avgpool2d to preserve the prob value
+            prob_feat = nn.MaxPool2d(self.du_scale)(prob_feat).view(
                     batch_size, 1,  h // self.du_scale * w // self.du_scale
                 ) # [B, 1,  H*W] after scaling
         #################### pointclouds ####################
