@@ -69,7 +69,7 @@ class ObjectNavAgent(Agent):
     # Flag for debugging data flow and task configuraiton
     verbose = False
 
-    def __init__(self, config, device_id: int = 0):
+    def __init__(self, config, device_id: int = 0, **kwargs):
         self.max_steps = config.AGENT.max_steps
         self.num_environments = config.NUM_ENVIRONMENTS
         if config.AGENT.panorama_start:
@@ -141,7 +141,8 @@ class ObjectNavAgent(Agent):
         # self.plan_high_goal = False
 
         self.num_high_goals = 1
-        self.ur_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
+        self.ur_global_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
+        self.ur_local_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
         self.max_ur_goal_dist_change = 30 # 1.5 meter
         self.ur_dist_reach_threshold = 10 # 0.5 meter
         self.agent_cell_radius = agent_cell_radius
@@ -165,7 +166,7 @@ class ObjectNavAgent(Agent):
         self._look_around_steps = np.zeros(self.num_environments)
         self._num_explored_grids = np.zeros(self.num_environments)
         self._info_gain_alpha = 10 # controls how much we want to prioritize checking out promising grids
-        self.save_info_gain_data = True # for training
+        self.save_info_gain_data = kwargs.get('collect_data',False) # for training
        
 
     def force_update_high_goal(self,e):
@@ -312,7 +313,8 @@ class ObjectNavAgent(Agent):
                     continue
                 dist_map = self._get_dist_map(e)
                 selected_pose, selected_info, selected_idx = self._select_goal(dist_map,info,local_map_pos)
-                self.ur_goal_pose[e] = global_pos[selected_idx] # selected global pos
+                self.ur_global_goal_pose[e] = global_pos[selected_idx] # selected global pos
+                self.ur_local_goal_pose[e] = local_map_pos[selected_idx] # selected local pos
                 goal_map_e = self._get_goal_map(selected_pose)
                 print("time to get info map: ", time.time() - start)
                 self.semantic_map.update_global_goal_for_env(e, goal_map_e)
@@ -324,7 +326,7 @@ class ObjectNavAgent(Agent):
             # not find obj and no need to update high goal
             # we just need to transform the high goal to account for the robot's movement
             else:
-                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self.ur_goal_pose[e])
+                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self.ur_global_goal_pose[e])
                 goal_map = self._get_goal_map(goal_coords)
                 self.semantic_map.update_global_goal_for_env(e, goal_map)
                 
@@ -396,7 +398,8 @@ class ObjectNavAgent(Agent):
         self._state = np.ones(self.num_environments)
         self._ur_goal_dist = np.zeros(self.num_environments)
         self._force_goal_update_once = np.full(self.num_environments, False)
-        self.ur_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device)
+        self.ur_global_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device)
+        self.ur_local_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device)
         self._look_around_steps = np.zeros(self.num_environments)
         self._num_explored_grids = np.zeros(self.num_environments)
 
@@ -424,7 +427,8 @@ class ObjectNavAgent(Agent):
         self._state[e] = 1
         self._ur_goal_dist[e] = 0
         self._force_goal_update_once[e] = False
-        self.ur_goal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
+        self.ur_global_goal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
+        self.ur_local_goal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
         self._look_around_steps[e] = 0
         self._num_explored_grids[e] = 0
 
@@ -497,8 +501,6 @@ class ObjectNavAgent(Agent):
         dilated_obstacle_map = None
         # if planner_inputs[0]["found_goal"]:
         #     self.episode_panorama_start_steps = 0
-
-        
      
         if self.timesteps[0] > self.max_steps:
             action = DiscreteNavigationAction.STOP
@@ -589,6 +591,7 @@ class ObjectNavAgent(Agent):
             fmm_dist = remove_boundary(fmm_dist)
             fmm_dist[dilated_obstacles==1] = 10000
 
+            # check if the agent is inside the obstacle
             if np.unique(fmm_dist).shape[0] > 10:
                 return torch.from_numpy(fmm_dist).float().to(self.device)
     
@@ -649,7 +652,7 @@ class ObjectNavAgent(Agent):
             replan = True
         
         # case 1, 3
-        goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self.ur_goal_pose[e])
+        goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self.ur_global_goal_pose[e])
         dist_map = self._get_dist_map(e)
         goal_dist = dist_map[goal_coords[0,0],goal_coords[0,1]].item() # we only consider the first goal
         
@@ -673,7 +676,40 @@ class ObjectNavAgent(Agent):
 
         return replan
 
- 
+    def _get_promising_dist(self, e:int) -> np.ndarray:
+        """
+        get the distance map of 'promising' areas for the current environment
+        """
+        dilated_obstacles = self.semantic_map.get_dialated_obstacle_map_local(e,1) 
+        traversible = 1 - dilated_obstacles
+
+        #################
+        # first we find areas that are close to the promising areas and traversible
+        planner = FMMPlanner(np.ones_like(traversible))
+        promising_map = self.semantic_map.get_promising_map(e) 
+        # Plan to the goal mask
+        planner.set_multi_goal(promising_map)
+
+        # Now mask out anything here based on distance to the goal mask
+        dist_map = planner.fmm_dist * traversible
+        dist_map[dist_map == 0] = dist_map.max()
+
+        navigable_goal_map = dist_map < 8
+        ##################
+
+        ##################
+        # then we compute the distance map to the navigable goal map
+
+        traversible = add_boundary(traversible)
+        vis_planner = FMMPlanner(traversible)
+        navigable_goal_map = add_boundary(navigable_goal_map)
+     
+        vis_planner.set_multi_goal(navigable_goal_map)
+        fmm_dist = vis_planner.fmm_dist
+        fmm_dist = remove_boundary(fmm_dist)
+        fmm_dist[dilated_obstacles==1] = 10000
+        
+        return torch.from_numpy(fmm_dist).float().to(self.device)
         
     def _compute_info_gains(self,e):
         """
@@ -691,10 +727,28 @@ class ObjectNavAgent(Agent):
                 arr = np.arange(n_p)
                 rng.shuffle(arr)
                 exp_pos = exp_pos_all[arr[:self._max_render_loc]]
-
             else:
                 exp_pos = sample_farthest_points(exp_pos_all.unsqueeze(0), K=self._max_render_loc)[0] # [1, N, 2]
                 exp_pos = exp_pos.squeeze(0) # [N, 2]
+        
+            ############################
+            # sample more points close to promising areas
+            if self.save_info_gain_data:
+                promising_map = self.semantic_map.get_promising_map(e) # [H, W]
+                if promising_map.sum() > 0:
+                    promising_dist_map = self._get_promising_dist(e) # [H, W]
+                    local_exp_pos_map_frame = self.semantic_map.hab_world_to_map_local_frame(e, exp_pos_all)
+
+                    promising_dist = promising_dist_map[local_exp_pos_map_frame[:,0], local_exp_pos_map_frame[:,1]] # [N]
+                    close_to_promising_idx = promising_dist < 40 # 1m
+                    total_close = close_to_promising_idx.sum().item()
+                    close_len = min(50, total_close)
+                    if close_len > 0:
+                        rng = np.random.default_rng()
+                        arr = np.arange(total_close)
+                        rng.shuffle(arr)
+                        exp_pos = torch.cat([exp_pos[:-close_len], exp_pos_all[close_to_promising_idx][arr[:close_len]]])
+                
         else:
             exp_pos = exp_pos_all
 

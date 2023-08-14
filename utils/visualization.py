@@ -53,6 +53,17 @@ def plot_image(sm):
     
     plt.show()
 
+def plot_multiple_images(images,row=1):
+
+    """
+    plot multiple images using matplot lib
+    """
+    col = len(images) // row
+    _, axes = plt.subplots(row, col, figsize=(12, 18))
+    for i in range(row):
+        for j in range(col):
+            axes[i,j].imshow(images[i*col+j].cpu().detach().numpy())
+    plt.show()
 
 def display_grayscale(image):
     img_bgr = np.repeat(image, 3, 2)

@@ -47,8 +47,8 @@ def get_skill_as_one_hot_dict(curr_skill: Skill):
 class OVMMAgent(ObjectNavAgent):
     """Uncertainty Reduction Agent (UR) for ObjectNav task."""
 
-    def __init__(self, config, device_id: int = 0, obs_spaces=None, action_spaces=None):
-        super().__init__(config, device_id=device_id)
+    def __init__(self, config, device_id: int = 0, obs_spaces=None, action_spaces=None, **kwargs):
+        super().__init__(config, device_id=device_id, **kwargs)
         self.states = None
         self.place_start_step = None
         self.pick_start_step = None

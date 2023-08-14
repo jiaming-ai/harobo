@@ -64,12 +64,16 @@ def create_ovmm_env_fn(config,args):
         # we select a subset of episodes to generate the dataset
         eps_select = {}
         eps_list = []
+        skip = 12
+        eps_per_scene = 12
         for eps in dataset.episodes:
             scene_id = eps.scene_id
             if scene_id not in eps_select:
                 eps_select[scene_id] = 0
-            if eps_select[scene_id] < 12:
-                eps_select[scene_id] += 1
+            eps_select[scene_id] += 1
+            if eps_select[scene_id] < skip:
+                continue
+            if eps_select[scene_id] < skip + eps_per_scene:
                 eps_list.append(eps)
         dataset.episodes = eps_list
 
@@ -129,6 +133,7 @@ class InteractiveEvaluator():
             device_id=self.gpu_id,
             obs_spaces=self.env.observation_space,
             action_spaces=self.env.action_space,
+            collect_data=self.args.collect_data,
         )
         self.play(
             agent,

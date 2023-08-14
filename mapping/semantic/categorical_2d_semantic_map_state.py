@@ -224,6 +224,12 @@ class Categorical2DSemanticMapState:
         
         return np.copy(prob_map.cpu().numpy())
     
+    def get_promising_map(self, e) -> np.ndarray:
+        """Get local promising map for an environment."""
+        prob_map = torch.sigmoid(self.local_map[e, MC.PROBABILITY_MAP, :, :])
+        
+        return np.copy(prob_map.cpu().numpy() > self.prior)
+    
     def get_probability_map_entropy(self, e) -> float:
         """Get local probability map entropy for an environment."""
         prob_map = self.get_probability_map_normalized(e)

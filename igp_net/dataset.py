@@ -3,6 +3,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
+import torchvision.transforms.functional as TF
 from agent.obj_nav_ura.urp.points_utils import show_points,show_points_with_prob, show_points_with_logit, show_voxel_dataset
 from utils.visualization import (
     display_grayscale,
@@ -17,7 +18,7 @@ from utils.visualization import (
 
 
 
-TEST_SCENE_IDS = []
+TEST_SCENE_IDS = ['102344049','102816009']
 MAX_DATA_PER_EP = 50
 MIN_DATA_PER_EP = 1
 
@@ -51,7 +52,6 @@ class URPDataset(Dataset):
         print(f"Loaded {len(self.data_list)} data files for {split} split")
 
         if data_config.random_rotate:
-            self.rotater = T.RandomRotation(degrees=180,fill=-1)
             print("Warning: random rotate is enabled")
 
         self.device = torch.device(device)
@@ -61,7 +61,16 @@ class URPDataset(Dataset):
     
     def __getitem__(self, index: int):
         data = torch.load(self.data_list[index])
-        flat_idx, p, global_exp_pos_map_frame, c_s, i_s = data
+        if len(data) == 5:
+            flat_idx, p, global_exp_pos_map_frame, c_s, i_s = data
+        elif len(data) == 6:
+            flat_idx, p, global_exp_pos_map_frame, c_s, i_s, theta_list = data
+            n_views = len(theta_list)
+            c_s = c_s.view(-1, n_views).sum(dim=-1)
+            i_s = i_s.view(-1, n_views).sum(dim=-1)
+        else:
+            raise ValueError("Invalid data format")
+        
         flat_idx = flat_idx.to(self.device)
         p = p.to(self.device)
         global_exp_pos_map_frame = global_exp_pos_map_frame.to(self.device)
@@ -84,11 +93,13 @@ class URPDataset(Dataset):
             idx = torch.stack([flat_idx // (map_size*map_size), 
                                (flat_idx % (map_size*map_size)) // map_size, 
                                flat_idx % map_size], dim=-1).long()
-            voxel[idx[:,2], idx[:,0], idx[:,1]] = p 
+            voxel[idx[:,2], idx[:,1], idx[:,0]] = p 
 
             info_map = torch.full([2, map_size, map_size], fill_value=-1, dtype=torch.float32,device=self.device) # x,y
             info_map[0, global_exp_pos_map_frame[:,0], global_exp_pos_map_frame[:,1]] = c_s
-            info_map[1, global_exp_pos_map_frame[:,0], global_exp_pos_map_frame[:,1]] = i_s
+            info_map[1, global_exp_pos_map_frame[:,0], global_exp_pos_map_frame[:,1]] = i_s * self.data_config.i_s_weight # scale i_s to make it more visible
+            # print(f"c_s avg: {c_s.mean()}, i_s avg: {i_s.mean()}, x: {c_s.mean()/i_s.mean()}")
+
 
             # filter height
             if filter_height:
@@ -104,12 +115,13 @@ class URPDataset(Dataset):
                 info_map = torch.nn.MaxPool2d(xy_scale)(info_map)
 
             if z_scale > 1:
-                voxel = torch.nn.MaxPool1d(z_scale,ceil_mode=True)(voxel.permute(1,2,0)).permute(2,0,1)
+                voxel = torch.nn.MaxPool1d(z_scale)(voxel.permute(1,2,0)).permute(2,0,1)
                 
             # random rotate
             if random_rotate:
-                voxel = self.rotater(voxel)
-                info_map = self.rotater(info_map)
+                angle = float(torch.empty(1).uniform_(float(-180), float(180)).item())
+                voxel = TF.rotate(voxel, angle,fill=-1)
+                info_map = TF.rotate(info_map, angle,fill=-1)
                 
              # crop
             if crop_size > 0:
@@ -136,7 +148,7 @@ class URPDataset(Dataset):
                     voxel = T.Pad((crop_size-voxel.shape[2],  crop_size-voxel.shape[1],0,0),fill=-1)(voxel)
                     info_map = T.Pad((crop_size-info_map.shape[2], crop_size-info_map.shape[1],0,0),fill=-1)(info_map)
             
-            voxel = voxel.permute(1,2,0) # z,x,y -> x,y,z
+            # voxel = voxel.permute(1,2,0) # z,x,y -> x,y,z
           
             # if voxel.max() > 0.5:
             #     print('show here')

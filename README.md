@@ -8,7 +8,7 @@
 # first checkout harobo and home-robot
 
 ```bash
-git clone --recurse-submodule https://github.com/facebookresearch/home-robot.git
+git clone https://github.com/facebookresearch/home-robot.git
 cd home-robot
 git reset --hard 5e9fdc7b2e88899061eecf03ec68f35607f772d5 # checkout to the commit that works with existing code
 cd ..
