@@ -95,10 +95,12 @@ class OVMMAgent(ObjectNavAgent):
                 obs_spaces=None,
                 action_spaces=None,
             )
+        print(f'loadding ppo agent for gaze at obj done')
         if (
             config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
             and not self.skip_skills.nav_to_obj
         ):
+            print(f'loadding ppo agent for nav to obj')
             self.nav_to_obj_agent = PPOAgent(
                 config,
                 config.AGENT.SKILLS.NAV_TO_OBJ,
@@ -106,6 +108,7 @@ class OVMMAgent(ObjectNavAgent):
                 obs_spaces=None,
                 action_spaces=None,
             )
+            print(f'loadding ppo agent for nav to obj done')
         if (
             config.AGENT.SKILLS.NAV_TO_REC.type == "rl"
             and not self.skip_skills.nav_to_rec
@@ -119,6 +122,8 @@ class OVMMAgent(ObjectNavAgent):
             )
         self._fall_wait_steps = config.AGENT.fall_wait_steps
         self.config = config
+
+        self.eval_rl_nav = kwargs.get("eval_rl_nav", False)
 
     def _get_info(self, obs: Observations) -> Dict[str, torch.Tensor]:
         """Get inputs for visual skill."""
@@ -390,6 +395,11 @@ class OVMMAgent(ObjectNavAgent):
         if terminate:
             action = None
             new_state = Skill.GAZE_AT_OBJ
+
+        # update the semantic map
+        if self.eval_rl_nav:
+            _, info, _ = self._heuristic_nav(obs, info)
+
         return action, info, new_state
 
     def _gaze_at_obj(

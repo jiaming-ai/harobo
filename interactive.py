@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from enum import IntEnum, auto
 
+from home_robot.core.interfaces import DiscreteNavigationAction, Observations, ContinuousNavigationAction
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from agent.ovmm.ovmm import OVMMAgent
@@ -48,6 +49,43 @@ from utils.visualization import (
     visualize_pred,
     save_img_tensor)
 
+# NON_SCALAR_METRICS = {"top_down_map", "collisions.is_collision"}
+# METRICS = ['OVMMDistToPickGoal', # distance to pick goal
+#            'ovmm_nav_to_pick_succ' # success of navigation to pick goal
+#            ]
+
+# def extract_scalars_from_info(cls, info):
+#     result = {}
+#     for k, v in info.items():
+#         if not isinstance(k, str) or k in NON_SCALAR_METRICS:
+#             continue
+
+#         if isinstance(v, dict):
+#             result.update(
+#                 {
+#                     k + "." + subk: subv
+#                     for subk, subv in cls._extract_scalars_from_info(
+#                         v
+#                     ).items()
+#                     if isinstance(subk, str)
+#                     and k + "." + subk not in NON_SCALAR_METRICS
+#                 }
+#             )
+#         # Things that are scalar-like will have an np.size of 1.
+#         # Strings also have an np.size of 1, so explicitly ban those
+#         elif np.size(v) == 1 and not isinstance(v, str):
+#             result[k] = float(v)
+
+#     return result
+
+def get_total_navigable_area(env):
+    """
+    Returns the total navigable area in the environment
+    """
+    sim = env.habitat_env.env._env.habitat_env.sim
+    pf = sim.pathfinder
+    return pf.navigable_area
+
 def create_ovmm_env_fn(config,args):
     """Create habitat environment using configsand wrap HabitatOpenVocabManipEnv around it. This function is used by VectorEnv for creating the individual environments"""
     
@@ -85,6 +123,9 @@ def create_ovmm_env_fn(config,args):
         eval_eps = [f'{e}' for e in eval_eps]
         eps_list = [eps for eps in dataset.episodes if eps.episode_id in eval_eps]
         dataset.episodes = eps_list
+
+    if args.eval_eps_total_num is not None:
+        dataset.episodes = dataset.episodes[:args.eval_eps_total_num]
 
     env_class_name = _get_env_name(config)
     env_class = get_env_class(env_class_name)
@@ -128,13 +169,18 @@ class InteractiveEvaluator():
     def eval(self, num_episodes_per_env=10):
      
         self.env = create_ovmm_env_fn(self.config,self.args)
+        print(f'Env created')
         agent = OVMMAgent(
             config=self.config,
             device_id=self.gpu_id,
             obs_spaces=self.env.observation_space,
             action_spaces=self.env.action_space,
             collect_data=self.args.collect_data,
+            eval_rl_nav=(config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"),
+            use_FBE_policy=self.args.FBE,
         )
+
+        print(f'Agent created')
         self.play(
             agent,
             self.env,
@@ -190,7 +236,7 @@ class InteractiveEvaluator():
         # detic_perception = OvmmPerception(self.config,self.gpu_id)
 
         episode_metrics = {}
-        start_time = time.time()
+        print(f'Resetting...')
         ob = env.reset()
         # update_detic_perception_vocab(ob, detic_perception)
 
@@ -202,67 +248,93 @@ class InteractiveEvaluator():
         print(f'Goal: {ob.task_observations["goal_name"]}')
         pre_entropy = 0
         ep_idx = 0
+        coverage_log_interval = 10
+        ########################################
+        # init evaluation metrics
+        # only used for object navigation task
+        ########################################
+        results = []
+        want_terminate = False
+        forward_steps = 0
+        init_dts = env.habitat_env.env._env.habitat_env.get_metrics()['ovmm_dist_to_pick_goal']
+        exp_coverage_list = []
+        checking_area_list = []
+        entropy_list = []
+        eps_step = 0
+        recorder = Recording()
+        result_dir = f'datadump/exp_results/{self.args.exp_name}/'
+        os.makedirs(result_dir, exist_ok=True)
         while ep_idx < env.number_of_episodes:
+            eps_step += 1
             
-            current_episodes_info = [self.env.current_episode()]
             print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             action, agent_info, _ = agent.act(ob)
             # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
             # pre_entropy = agent_info["entropy"]
+            print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
+
+            exp_coverage_list.append(agent_info["exp_coverage"])
+            checking_area_list.append(agent_info["checking_area"])
+            entropy_list.append(agent_info["entropy"])
+                
             
-            if not self.args.no_render:
 
-                draw_ob = ob.rgb
+            draw_ob = ob.rgb
 
-                # # visualize GT semantic map
-                # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
-                # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
+            # # visualize GT semantic map
+            # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
+            # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
 
-                #  visualize detected instances
-                if 'semantic_frame' in ob.task_observations:
-                    draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
-                
-                # # visualize objectness
-                # if 'objectiveness_visualization' in ob.task_observations:
-                #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
-                
-                # visualize semantic map
-                vis = visualizer.visualize(**agent_info)
-                semantic_map_vis = vis['semantic_map']
-                semantic_map_vis = cv2.resize(
-                    semantic_map_vis,
+            #  visualize detected instances
+            if 'semantic_frame' in ob.task_observations:
+                draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
+            
+            # # visualize objectness
+            # if 'objectiveness_visualization' in ob.task_observations:
+            #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
+            
+            # visualize semantic map
+            vis = visualizer.visualize(**agent_info)
+            semantic_map_vis = vis['semantic_map']
+            semantic_map_vis = cv2.resize(
+                semantic_map_vis,
+                (640, 640),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
+
+            # visualize probabilistic map
+            if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
+                prob_map = agent_info['probabilistic_map']
+                prob_map = np.flipud(prob_map)
+                prob_map = cv2.resize(
+                    prob_map,
                     (640, 640),
                     interpolation=cv2.INTER_NEAREST,
                 )
-                draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
-
-                # visualize probabilistic map
-                if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
-                    prob_map = agent_info['probabilistic_map']
-                    prob_map = np.flipud(prob_map)
-                    prob_map = cv2.resize(
-                        prob_map,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    prob_map = (prob_map * 255).astype(np.uint8)
-                    prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
-                    draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
-                
-                # visualize info_gain map
-                if "info_map" in agent_info and agent_info['info_map'] is not None:
-                    info_map = agent_info['info_map']
-                    info_map = np.flipud(info_map)
-                    info_map = cv2.resize(
-                        info_map,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    info_map = (info_map * 255).astype(np.uint8)
-                    if info_map.ndim == 2:
-                        info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
-                    draw_ob = np.concatenate([draw_ob, info_map], axis=1)
+                prob_map = (prob_map * 255).astype(np.uint8)
+                prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
+                draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
+            
+            # visualize info_gain map
+            if "info_map" in agent_info and agent_info['info_map'] is not None:
+                info_map = agent_info['info_map']
+                info_map = np.flipud(info_map)
+                info_map = cv2.resize(
+                    info_map,
+                    (640, 640),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                info_map = (info_map * 255).astype(np.uint8)
+                if info_map.ndim == 2:
+                    info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
+                draw_ob = np.concatenate([draw_ob, info_map], axis=1)
                 # draw
+
+            if self.args.save_video:
+                recorder.add_frame(draw_ob)
+
+            if not self.args.no_render:
                 user_action = self.viewer.imshow(
                     draw_ob, delay=0 if not self.args.no_interactive else 2
                 )
@@ -275,15 +347,52 @@ class InteractiveEvaluator():
             outputs = env.apply_action(action, agent_info)
             ob, done, info = outputs
 
+            if action is None:
+                want_terminate = True
+                done = True
+            elif action == DiscreteNavigationAction.MOVE_FORWARD:
+                forward_steps += 1
+
             if done:
                 print(f"Episode {ep_idx} finished.")
+                current_episodes_info = self.env.current_episode()
+                
+                # save evaluation results
+                total_nav_area = get_total_navigable_area(env) # in m2
+                eps_result = {
+                    'episode_id': current_episodes_info.episode_id,
+                    'scene_id': current_episodes_info.scene_id,
+                    'success': info['ovmm_nav_to_pick_succ'],
+                    'distance_to_goal': info['ovmm_dist_to_pick_goal'],
+                    'travelled_distance': forward_steps * config.ENVIRONMENT.forward,
+                    'steps': info['num_steps'],
+                    'want_terminate': want_terminate,
+                    'goal_object': ob.task_observations["goal_name"],
+                    'spl': init_dts / max(forward_steps * config.ENVIRONMENT.forward, init_dts),
+                    'total_nav_area': total_nav_area,
+                    'exp_coverage': exp_coverage_list,
+                    'checking_area': checking_area_list,
+                    'entropy': entropy_list,
+                }
+                results.append(eps_result)
+                
+                with open(f'{result_dir}/eval_results.json', 'w') as f:
+                    json.dump(results, f, indent=4)
+                if self.args.save_video:
+                    v_name = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
+                    recorder.save_video(v_name,result_dir)
+                
+                
                 ob = env.reset()
-                ep_idx += 1
-                 # update_detic_perception_vocab(ob, detic_perception)
                 agent.reset_vectorized_for_env(
                     0, self.env.current_episode()
                 )
                 visualizer.reset()
+                ep_idx += 1
+                forward_steps = 0
+                want_terminate = False
+                init_dts = env.habitat_env.env._env.habitat_env.get_metrics()['ovmm_dist_to_pick_goal']
+
                 print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')
 
@@ -307,7 +416,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gpu_id",
         type=int,
-        default=3,
+        default=1,
         help="GPU id to use for evaluation",
     )
     parser.add_argument(
@@ -334,6 +443,12 @@ if __name__ == "__main__":
         nargs="+",
         default=None,
     )
+    parser.add_argument(
+        "--eval_eps_total_num",
+        help="evaluate a subset of episodes",
+        type=int,
+        default=None,
+    )
 
     parser.add_argument(
         "--collect_data",
@@ -341,11 +456,27 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
-
+    parser.add_argument(
+        "--exp_name",
+        help="experiment name",
+        type=str,
+        default='debug',
+    )
+    parser.add_argument(
+        "--FBE",
+        help="use FBE policy",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--save_video",
+        help="Save video",
+        action="store_true",
+        default=False,
+    )
 
     print("Arguments:")
     args = parser.parse_args()
-    # args.collect_data = True
     print(json.dumps(vars(args), indent=4))
     print("-" * 100)
 

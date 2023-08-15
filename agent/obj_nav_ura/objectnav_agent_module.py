@@ -186,7 +186,7 @@ class ObjectNavAgentModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
-            # seq_point_clouds
+            seq_extras,
         ) = self.semantic_map_module(
             seq_obs,
             seq_pose_delta,
@@ -263,7 +263,7 @@ class ObjectNavAgentModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
-            # seq_point_clouds
+            seq_extras,
         )
 
     # def _get_dense_info_gain_map(self, semantic_map, e):

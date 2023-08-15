@@ -172,6 +172,7 @@ class PPOAgent(Agent):
             self.actions_dim = 1
 
         # Initialize actor critic using the policy config
+        print(f'before creating actor critic')
         self.actor_critic = policy.from_config(
             self.rl_config,
             skill_obs_spaces,
@@ -181,6 +182,7 @@ class PPOAgent(Agent):
 
         # load checkpoint
         model_path = skill_config.checkpoint_path
+        print(f'Before loading model from {model_path}')
         if model_path:
             ckpt = torch.load(model_path, map_location=self.device)
             #  Filter only actor_critic weights
@@ -191,6 +193,7 @@ class PPOAgent(Agent):
                     if "actor_critic" in k
                 }
             )
+        
         self.actor_critic.eval()
         self.max_displacement = skill_config.max_displacement
         self.max_turn = skill_config.max_turn_degrees * np.pi / 180

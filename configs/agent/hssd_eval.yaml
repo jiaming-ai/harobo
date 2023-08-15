@@ -83,7 +83,7 @@ AGENT:
       type: oracle
 
     NAV_TO_OBJ:
-      type: heuristic # heuristic (default) or rl
+      type: rl # heuristic (default) or rl
       checkpoint_path: data/checkpoints/ovmm_baseline_home_robot_challenge_2023/nav_to_obj.pth
       rl_config: configs/agent/nav_to_obj_rl.yaml
       gym_obs_keys:
@@ -143,7 +143,7 @@ AGENT:
 
 
     PLACE:
-      type: rl #heuristic # "rl" or "heuristic" or "hardcoded"
+      type: heuristic # "rl" or "heuristic" or "hardcoded"
       checkpoint_path: data/checkpoints/ovmm_baseline_home_robot_challenge_2023/place.pth
       rl_config: configs/agent/place_rl.yaml # with continuous actions
       gym_obs_keys:

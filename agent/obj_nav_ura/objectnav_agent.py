@@ -168,7 +168,8 @@ class ObjectNavAgent(Agent):
         self._info_gain_alpha = 10 # controls how much we want to prioritize checking out promising grids
         self.save_info_gain_data = kwargs.get('collect_data',False) # for training
        
-
+        self.use_FBE_policy = kwargs.get('use_FBE_policy',False) or kwargs.get('eval_rl_nav',False) # for evaluation
+        
     def force_update_high_goal(self,e):
         self._force_goal_update_once[e] = True
 
@@ -269,6 +270,7 @@ class ObjectNavAgent(Agent):
             seq_global_pose,
             seq_lmb,
             seq_origins,
+            seq_extras,
         ) = self.module(
             obs.unsqueeze(1),
             pose_delta.unsqueeze(1),
@@ -293,15 +295,16 @@ class ObjectNavAgent(Agent):
         self.semantic_map.lmb = seq_lmb[:, -1]
         self.semantic_map.origins = seq_origins[:, -1]
         
+        extras = seq_extras[-1]
         goal_map = goal_map.squeeze(1).cpu().numpy()
         found_goal = found_goal.squeeze(1).cpu()
 
         
-
+        
         for e in range(self.num_environments):
             self.semantic_map.update_frontier_map(e, frontier_map[e][0].cpu().numpy())
             # find object goal
-            if found_goal[e]:
+            if found_goal[e] or self.use_FBE_policy:
                 self.semantic_map.update_global_goal_for_env(e, goal_map[e])
                 self._state[e] = 2 # go to object goal
             # if not find object goal and need to update high goal
@@ -378,6 +381,7 @@ class ObjectNavAgent(Agent):
                     "semantic_map": self.semantic_map.get_semantic_map(e),
                     "been_close_map": self.semantic_map.get_been_close_map(e),
                     "timestep": self.timesteps[e],
+                    "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
                 }
                 for e in range(self.num_environments)
             ]
@@ -539,6 +543,7 @@ class ObjectNavAgent(Agent):
         # print()
 
         vis_inputs[0]["goal_name"] = obs.task_observations["goal_name"]
+
         if self.visualize:
             vis_inputs[0]["semantic_frame"] = obs.task_observations["semantic_frame"]
             vis_inputs[0]["closest_goal_map"] = closest_goal_map
@@ -546,6 +551,7 @@ class ObjectNavAgent(Agent):
             vis_inputs[0]["short_term_goal"] = None
             vis_inputs[0]["dilated_obstacle_map"] = dilated_obstacle_map
             vis_inputs[0]["probabilistic_map"] = self.semantic_map.get_probability_map(0)
+            vis_inputs[0]["exp_coverage"] = self.semantic_map.get_exp_coverage_area(0)
             # vis_inputs[0]["info_map"] = info_map
 
         info = {**planner_inputs[0], **vis_inputs[0]}

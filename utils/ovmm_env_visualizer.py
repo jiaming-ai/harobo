@@ -321,7 +321,7 @@ class Visualizer:
             semantic_map[visited_mask] = PI.VISITED
 
             # Goal
-            if visualize_goal:
+            if visualize_goal and goal_map is not None:
                 selem = skimage.morphology.disk(4)
                 goal_mat = 1 - skimage.morphology.binary_dilation(goal_map, selem) != 1
                 goal_mask = goal_mat == 1
@@ -383,17 +383,17 @@ class Visualizer:
             cv2.drawContours(image_vis, [agent_arrow], 0, color, -1)
 
         # overlay RL observation frame
-        if self.show_rl_obs and rl_obs_frame is not None:
-            # Reshape the height while maintaining aspect ratio to V.HEIGHT
-            rl_obs_frame = rl_obs_frame[:, :, [2, 1, 0]]
-            # find the width of the frame such that height is V.HEIGHT
-            width = int(rl_obs_frame.shape[1] * V.HEIGHT / rl_obs_frame.shape[0])
-            rl_obs_frame = cv2.resize(
-                rl_obs_frame,
-                (width, V.HEIGHT),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            image_vis[V.Y1 : V.Y2, V.TOP_DOWN_X1 : V.TOP_DOWN_X1 + width] = rl_obs_frame
+        # if self.show_rl_obs and rl_obs_frame is not None:
+        #     # Reshape the height while maintaining aspect ratio to V.HEIGHT
+        #     rl_obs_frame = rl_obs_frame[:, :, [2, 1, 0]]
+        #     # find the width of the frame such that height is V.HEIGHT
+        #     width = int(rl_obs_frame.shape[1] * V.HEIGHT / rl_obs_frame.shape[0])
+        #     rl_obs_frame = cv2.resize(
+        #         rl_obs_frame,
+        #         (width, V.HEIGHT),
+        #         interpolation=cv2.INTER_NEAREST,
+        #     )
+        #     image_vis[V.Y1 : V.Y2, V.TOP_DOWN_X1 : V.TOP_DOWN_X1 + width] = rl_obs_frame
 
         elif third_person_image is not None:
             image_vis[V.Y1 : V.Y2, V.THIRD_PERSON_X1 : V.THIRD_PERSON_X2] = cv2.resize(

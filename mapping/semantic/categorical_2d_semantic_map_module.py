@@ -288,6 +288,7 @@ class Categorical2DSemanticMapModule(nn.Module):
             batch_size, sequence_length, 4, device=device, dtype=torch.int32
         )
         seq_origins = torch.zeros(batch_size, sequence_length, 3, device=device)
+        seq_extras = [None] * sequence_length
 
         local_map, local_pose = init_local_map.clone(), init_local_pose.clone()
         global_map, global_pose = init_global_map.clone(), init_global_pose.clone()
@@ -307,7 +308,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                         self.map_size_parameters,
                     )
 
-            local_map, local_pose = self._update_local_map_and_pose(
+            local_map, local_pose, extras = self._update_local_map_and_pose(
                 seq_obs[:, t],
                 seq_pose_delta[:, t],
                 local_map,
@@ -326,6 +327,7 @@ class Categorical2DSemanticMapModule(nn.Module):
             seq_lmb[:, t] = lmb
             seq_origins[:, t] = origins
             seq_map_features[:, t] = self._get_map_features(local_map, global_map)
+            seq_extras[t] = extras
 
         return (
             seq_map_features,
@@ -335,6 +337,7 @@ class Categorical2DSemanticMapModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
+            seq_extras,
         )
 
     def _update_local_map_and_pose(
@@ -703,7 +706,14 @@ class Categorical2DSemanticMapModule(nn.Module):
         # we assume if we have been close to the object, we can identify the object, and update the semantic correctly
         # If we don't go to goal, then most likely the object is not the goal object on the specified receptacle
         
-        # confident_no_obj = (current_map[:, MC.BEEN_CLOSE_MAP] == 1) & (current_map[:, goal_idx] < self.confident_threshold)
+        # only for evaluation
+        checking_area = (translated[:, MC.BEEN_CLOSE_MAP] == 1) \
+                    & (current_map[:, MC.PROBABILITY_MAP] > self.prior_logit) \
+                    & (prev_map[:, MC.BEEN_CLOSE_MAP] != 1) # only check the area that we have not been close to, to avoid repeated checking
+        checking_area = checking_area.sum(dim=(1,2)).cpu().numpy() * self.resolution * self.resolution / 10000 # m^2
+        extras = {
+            "checking_area": checking_area, # ndarray of size [B]
+        }
         confident_no_obj = current_map[:, MC.BEEN_CLOSE_MAP] == 1
         current_map[:, MC.PROBABILITY_MAP][confident_no_obj] = -10 
 
@@ -837,7 +847,7 @@ class Categorical2DSemanticMapModule(nn.Module):
         #         current_map[:, MC.OBSTACLE_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
         #     )
 
-        return current_map, current_pose
+        return current_map, current_pose, extras
 
     def _update_global_map_and_pose_for_env(
         self,

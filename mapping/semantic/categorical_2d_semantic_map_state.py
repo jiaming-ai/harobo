@@ -377,6 +377,11 @@ class Categorical2DSemanticMapState:
         return pos_map.long()
     
     
+    def get_exp_coverage_area(self, e) -> float:
+        """Get the total area of the map that is explored."""
+        exp_area = (self.global_map[e, MC.EXPLORED_MAP, :, :] > 0).sum().item()
+        return exp_area * self.resolution * self.resolution / 10000 # in m^2
+    
     def get_planner_pose_inputs(self, e) -> np.ndarray:
         """Get local planner pose inputs for an environment.
 
