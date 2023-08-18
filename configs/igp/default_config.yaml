@@ -11,7 +11,7 @@ dataloader:
   random_rotate: True
   crop_size: 384
   filter_height: True
-  i_s_weight: 20
+  i_s_weight: 10
 
 net:
   backbone: "unet"

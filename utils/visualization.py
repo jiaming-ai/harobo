@@ -12,6 +12,31 @@ from PIL import Image, ImageDraw, ImageFont
 from habitat.utils.visualizations.utils import images_to_video
 import os
 
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+
+
+def draw_plt_image(img):
+    fig = Figure(figsize=(8, 8))
+    canvas = FigureCanvasAgg(fig)
+    
+    if isinstance(img, torch.Tensor):
+        img = img.cpu().numpy()
+
+    
+    ax = fig.add_axes([0, 0, 1, 1], frameon=False, xticks=[], yticks=[])
+    ax.imshow(img,cmap='coolwarm')
+    # ax.axis('off')
+    # plt.gcf().delaxes(plt.gca())
+    # fig.tight_layout()
+    canvas.draw()  # Draw the canvas, cache the renderer
+
+    buf = canvas.buffer_rgba()
+    # convert to a NumPy array
+    image = np.asarray(buf)
+    return image
+
 def save_image(sm,file_name=None,dir=None,add_time=False):
     if dir is None:
         dir = 'out/'

@@ -104,7 +104,7 @@ def create_ovmm_env_fn(config,args):
         # we select a subset of episodes to generate the dataset
         eps_select = {}
         eps_list = []
-        skip = 24
+        skip = 12
         eps_per_scene = 12
         for eps in dataset.episodes:
             scene_id = eps.scene_id
@@ -171,6 +171,7 @@ class InteractiveEvaluator():
     def eval(self, num_episodes_per_env=10):
      
         self.env = create_ovmm_env_fn(self.config,self.args)
+        visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
         print(f'Env created')
         agent = OVMMAgent(
             config=self.config,
@@ -180,7 +181,7 @@ class InteractiveEvaluator():
             collect_data=self.args.collect_data,
             eval_rl_nav=(config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"),
             use_FBE_policy=self.args.eval_policy == 'fbe',
-            sim=self.env.habitat_env.env._env.habitat_env.sim, # TODO: remove this
+            visualize=visualize,
         )
 
         print(f'Agent created')
@@ -256,6 +257,7 @@ class InteractiveEvaluator():
         # init evaluation metrics
         # only used for object navigation task
         ########################################
+        visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
         results = []
         recorder = Recording()
         result_dir = f'datadump/exp_results/{self.args.exp_name}/'
@@ -285,57 +287,58 @@ class InteractiveEvaluator():
             entropy_list.append(agent_info["entropy"])
             close_coverage_list.append(agent_info["close_coverage"])
 
-            draw_ob = ob.rgb
+            if visualize:
+                draw_ob = ob.rgb
 
-            # # visualize GT semantic map
-            # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
-            # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
+                # # visualize GT semantic map
+                # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
+                # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
 
-            #  visualize detected instances
-            if 'semantic_frame' in ob.task_observations:
-                draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
-            
-            # # visualize objectness
-            # if 'objectiveness_visualization' in ob.task_observations:
-            #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
-            
-            # visualize semantic map
-            vis = visualizer.visualize(**agent_info)
-            semantic_map_vis = vis['semantic_map']
-            semantic_map_vis = cv2.resize(
-                semantic_map_vis,
-                (640, 640),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
-
-            # visualize probabilistic map
-            if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
-                prob_map = agent_info['probabilistic_map']
-                prob_map = np.flipud(prob_map)
-                prob_map = cv2.resize(
-                    prob_map,
+                #  visualize detected instances
+                if 'semantic_frame' in ob.task_observations:
+                    draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
+                
+                # # visualize objectness
+                # if 'objectiveness_visualization' in ob.task_observations:
+                #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
+                
+                # visualize semantic map
+                vis = visualizer.visualize(**agent_info)
+                semantic_map_vis = vis['semantic_map']
+                semantic_map_vis = cv2.resize(
+                    semantic_map_vis,
                     (640, 640),
                     interpolation=cv2.INTER_NEAREST,
                 )
-                prob_map = (prob_map * 255).astype(np.uint8)
-                prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
-                draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
-            
-            # visualize info_gain map
-            if "info_map" in agent_info and agent_info['info_map'] is not None:
-                info_map = agent_info['info_map']
-                info_map = np.flipud(info_map)
-                info_map = cv2.resize(
-                    info_map,
-                    (640, 640),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                info_map = (info_map * 255).astype(np.uint8)
-                if info_map.ndim == 2:
-                    info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
-                draw_ob = np.concatenate([draw_ob, info_map], axis=1)
-                # draw
+                draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
+
+                # visualize probabilistic map
+                if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
+                    prob_map = agent_info['probabilistic_map']
+                    prob_map = np.flipud(prob_map)
+                    prob_map = cv2.resize(
+                        prob_map,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    prob_map = (prob_map * 255).astype(np.uint8)
+                    prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
+                    draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
+                
+                # visualize info_gain map
+                if "info_map" in agent_info and agent_info['info_map'] is not None:
+                    info_map = agent_info['info_map']
+                    info_map = np.flipud(info_map)
+                    info_map = cv2.resize(
+                        info_map,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    info_map = (info_map * 255).astype(np.uint8)
+                    if info_map.ndim == 2:
+                        info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
+                    draw_ob = np.concatenate([draw_ob, info_map], axis=1)
+                    # draw
 
             if self.args.save_video:
                 recorder.add_frame(draw_ob)
@@ -450,7 +453,7 @@ if __name__ == "__main__":
         "--no_interactive",
         action="store_true",
         help="Whether to render the environment or not",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--eval_eps",
@@ -462,7 +465,7 @@ if __name__ == "__main__":
         "--eval_eps_total_num",
         help="evaluate a subset of episodes",
         type=int,
-        default=None,
+        default=200,
     )
 
     parser.add_argument(
@@ -547,7 +550,7 @@ if __name__ == "__main__":
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = True
     # else:
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = False
-
+    visualize = args.save_video or (not args.no_render) or (not args.no_interactive)
     
     OmegaConf.set_readonly(config, True)
     

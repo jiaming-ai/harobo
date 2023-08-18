@@ -138,9 +138,9 @@ class URPDataset(Dataset):
                 x_center = (x_min + x_max) // 2
                 y_center = (y_min + y_max) // 2
                 x_min = max(0, x_center - crop_size // 2)
-                x_max = min(map_size, x_center + crop_size // 2)
+                x_max = min(map_size//xy_scale, x_center + crop_size // 2)
                 y_min = max(0, y_center - crop_size // 2)
-                y_max = min(map_size, y_center + crop_size // 2)
+                y_max = min(map_size//xy_scale, y_center + crop_size // 2)
                 voxel = voxel[:, x_min:x_max, y_min:y_max]
                 info_map = info_map[:, x_min:x_max, y_min:y_max]
 

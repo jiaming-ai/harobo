@@ -225,16 +225,26 @@ class OVMMAgent(ObjectNavAgent):
         print("Initializing episode...")
         # use only relevant semantic categories (obj, start_rec, goal_rec) 
         # maight use more categories if we learn a prior over recs
-        if self.semantic_sensor is not None:
+        # if self.semantic_sensor is not None:
+        #     self._update_semantic_vocabs(obs)
+        #     self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
+        #     # if (
+        #     #     self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
+        #     #     and not self.skip_skills.nav_to_obj
+        #     # ):
+        #     #     self._set_semantic_vocab(SemanticVocab.FULL, force_set=True)
+        #     # else:
+        #     #     self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
+
+        if self.config.GROUND_TRUTH_SEMANTICS == 0:
             self._update_semantic_vocabs(obs)
-            self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
-            # if (
-            #     self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
-            #     and not self.skip_skills.nav_to_obj
-            # ):
-            #     self._set_semantic_vocab(SemanticVocab.FULL, force_set=True)
-            # else:
-            #     self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
+            if (
+                self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
+                and not self.skip_skills.nav_to_obj
+            ):
+                self._set_semantic_vocab(SemanticVocab.FULL, force_set=True)
+            else:
+                self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
 
     def _switch_to_next_skill(
         self, e: int, next_skill: Skill, info: Dict[str, Any]

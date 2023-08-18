@@ -434,21 +434,21 @@ class Categorical2DSemanticMapModule(nn.Module):
         # we assume total_num_instance is the same for all batch (padded with 0)
 
         # first take max prob value for pixel
-        scores = detection_result["scores"] # [B, total_num_instance]
-        classes = detection_result["classes"] # [B, total_num_instance]
-        masks = detection_result["masks"].float() # [B, total_num_instance, H, W]
-        relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
+        prob_feat = torch.zeros(batch_size, 1, h // self.du_scale * w // self.du_scale).to(device)
+        if detection_result is not None:
+            scores = detection_result["scores"] # [B, total_num_instance]
+            classes = detection_result["classes"] # [B, total_num_instance]
+            masks = detection_result["masks"].float() # [B, total_num_instance, H, W]
+            relevance = detection_result["relevance"] #torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
 
-        if masks.shape[1] == 0: # no instance detected
-            prob_feat = torch.zeros(batch_size, 1, h // self.du_scale * w // self.du_scale).to(device)
-        else:
-            score_relevence = scores * relevance[classes] # [B, total_num_instance]
-            prob_feat = torch.einsum('bnhw,bn->bnhw',masks, score_relevence) # [B, N, H, W]
-            prob_feat,_ = torch.max(prob_feat, dim=1, keepdim=True) # [B,1, H, W]
-            # we use maxpool2d instead of avgpool2d to preserve the prob value
-            prob_feat = nn.MaxPool2d(self.du_scale)(prob_feat).view(
-                    batch_size, 1,  h // self.du_scale * w // self.du_scale
-                ) # [B, 1,  H*W] after scaling
+            if masks.shape[1] != 0: # no instance detected
+                score_relevence = scores * relevance[classes] # [B, total_num_instance]
+                prob_feat = torch.einsum('bnhw,bn->bnhw',masks, score_relevence) # [B, N, H, W]
+                prob_feat,_ = torch.max(prob_feat, dim=1, keepdim=True) # [B,1, H, W]
+                # we use maxpool2d instead of avgpool2d to preserve the prob value
+                prob_feat = nn.MaxPool2d(self.du_scale)(prob_feat).view(
+                        batch_size, 1,  h // self.du_scale * w // self.du_scale
+                    ) # [B, 1,  H*W] after scaling
         #################### pointclouds ####################
 
         point_cloud_map_coords = du.transform_pose_t(
@@ -516,7 +516,9 @@ class Categorical2DSemanticMapModule(nn.Module):
             XYZ_cm_std.shape[2] * XYZ_cm_std.shape[3],
         ) # [B, 3, H*W]
 
+        # voxels = du.splat_feat_nd_max(init_grid, feat, XYZ_cm_std).transpose(2, 3)
         voxels = du.splat_feat_nd(init_grid, feat, XYZ_cm_std).transpose(2, 3)
+
         all_height_proj = voxels[:,:1,...].sum(4)
         # ignore objects that are too low
         filtered_height_proj = voxels[...,
@@ -714,17 +716,28 @@ class Categorical2DSemanticMapModule(nn.Module):
         extras = {
             "checking_area": checking_area, # ndarray of size [B]
         }
+        # if been close to and the prob is very low
+        # NOTE: however, this doesn't work well, because the prob can be hight for a recepticle
+        # and make the agent repeatively checking the recepticle. We need to have different prob 
+        # for different objects in order to make this work
+        # So instead, we mark all close area to be low prob. Effectively, we only ask the agent to check
+        # the area that has not been close to once, and then we can be confident about the object not being there
+        # if the object detection model doesn't detect it
+        # confident_no_obj = (current_map[:, MC.BEEN_CLOSE_MAP] == 1) \
+        #                 & (current_map[:, MC.PROBABILITY_MAP] < self.prior_logit) 
+        
         confident_no_obj = current_map[:, MC.BEEN_CLOSE_MAP] == 1
+
         current_map[:, MC.PROBABILITY_MAP][confident_no_obj] = -10 
 
         ############### end Bayesian update ###############
         
         ############## voxel update ################
         # we only update occupaid voxel (by current observation)
-        # if voxel is empty in the previous map (isnan), then we assign the logit of the voxel: 
+        # if voxel is empty in the previous map (isinf), then we assign the logit of the voxel: 
         # otherwise, update with l(p^t) = l(p^t-1) + l(p^t) - l(p)
         is_occupaid = occupaid_voxel_st >0.5
-        is_pre_empty = prev_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].isnan()
+        is_pre_empty = prev_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].isinf()
         need_assign_logit = is_occupaid & is_pre_empty
         need_addition_logit = is_occupaid & ~is_pre_empty
         voxel_logit = torch.logit(
@@ -740,16 +753,32 @@ class Categorical2DSemanticMapModule(nn.Module):
         # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:][need_addition_logit] += \
         #     (voxel_logit[need_addition_logit] - self.prior_logit)
         
-        is_post_occupaid = ~updated.isnan()
+        is_post_occupaid = ~updated.isinf()
         updated[is_post_occupaid] = torch.clamp(updated[is_post_occupaid], min=-10, max=10)
-        # is_post_occupaid = ~current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].isnan()
+        # is_post_occupaid = ~current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].isinf()
         # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:].clamp_(min=-10,max=10)
 
+        
+        # if the prob of a voxel is very low and is closely checked, then we set it to -10
+        # NOTE: same reasoning as above.
+        # However, as we don't know if the voxel is visible or not, we mark all voxels that
+        # are both close and occupaid as low prob
+        # we need to use an additional channel in order to know if the voxel has been 
+        # closely looked at
+        # confident_no_obj = ( updated < self.prior_logit ) & is_occupaid \
+        #                 & (current_map[:, MC.BEEN_CLOSE_MAP].unsqueeze(1).repeat(1,self.max_mapped_height, 1,1)==1) # [B, H, W] -> [B, C, H, W
         confident_no_obj = confident_no_obj.unsqueeze(1).repeat(1,self.max_mapped_height, 1,1) # [B, H, W] -> [B, C, H, W]
+
         updated[confident_no_obj & is_post_occupaid] = -10
         current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:] = updated
-        # current_map[:,MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:][confident_no_obj & is_post_occupaid] = -10
         
+        ############ how about use voxel map for prob map
+        # is_post_occupaid_proj = is_post_occupaid.max(dim=1)[0]
+        # current_map[:, MC.PROBABILITY_MAP, :, :][is_post_occupaid_proj] = \
+        #     torch.max(current_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS,:,:], dim=1)[0][is_post_occupaid_proj]
+        # current_map[:, goal_idx :, :] = current_map[:,MC.PROBABILITY_MAP, :, :] > 0
+        
+
         ############### end voxel update ###############
         # Reset current location
         # TODO: it is always in the center, do we need it?

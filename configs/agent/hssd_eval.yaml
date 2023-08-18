@@ -53,7 +53,7 @@ AGENT:
 
   SKILLS:
     GAZE_OBJ:
-      type: rl #end_to_end #heuristic #hardcoded
+      type: heuristic #end_to_end #heuristic #hardcoded
       checkpoint_path: data/checkpoints/ovmm_baseline_home_robot_challenge_2023/gaze_at_obj.pth
       rl_config: configs/agent/gaze_rl.yaml # with continuous actions
       gym_obs_keys:
@@ -83,7 +83,7 @@ AGENT:
       type: oracle
 
     NAV_TO_OBJ:
-      type: rl # heuristic (default) or rl
+      type: heuristic # heuristic (default) or rl
       checkpoint_path: data/checkpoints/ovmm_baseline_home_robot_challenge_2023/nav_to_obj.pth
       rl_config: configs/agent/nav_to_obj_rl.yaml
       gym_obs_keys:
@@ -111,6 +111,7 @@ AGENT:
       sensor_width: 120
       terminate_condition: discrete_stop
       nav_goal_seg_channels: 2
+      
 
     NAV_TO_REC:
       type: heuristic # heuristic (default) or rl

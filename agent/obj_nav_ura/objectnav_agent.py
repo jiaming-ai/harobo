@@ -45,9 +45,13 @@ from utils.visualization import (
     draw_top_down_map, 
     Recording, 
     visualize_gt,
+    draw_plt_image,
     visualize_pred,
     save_img_tensor)
+
 from .urp.points_utils import show_points, show_points_with_logit, get_pc_from_voxel, show_points_with_prob
+from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel
+
 from .urp.urp_dr import DRPlanner
 from pytorch3d.ops import sample_farthest_points
 
@@ -57,7 +61,8 @@ import skimage.morphology
 from navigation_planner.fmm_planner import FMMPlanner
 from navigation_planner.discrete_planner import add_boundary, remove_boundary
 
-
+from .pn_agent import PNAgent
+from igp_net.predictor import IGPredictor
 
 # For visualizing exploration issues
 debug_frontier_map = False
@@ -89,7 +94,7 @@ class ObjectNavAgent(Agent):
             # Use DataParallel only as a wrapper to move model inputs to GPU
             self.module = DataParallel(self._module, device_ids=[self.device_id])
 
-        self.visualize = config.VISUALIZE or config.PRINT_IMAGES
+        self.visualize = config.VISUALIZE or config.PRINT_IMAGES or kwargs.get('visualize',False)
         self.use_dilation_for_stg = config.AGENT.PLANNER.use_dilation_for_stg
         self.semantic_map = Categorical2DSemanticMapState(
             device=self.device,
@@ -126,7 +131,7 @@ class ObjectNavAgent(Agent):
             config.AGENT.SEMANTIC_MAP.num_sem_categories, device=self.device
         )
 
-        self.goal_update_steps = 100
+        
         self.timesteps = None
         self.timesteps_before_goal_update = None
         self.episode_panorama_start_steps = None
@@ -144,12 +149,13 @@ class ObjectNavAgent(Agent):
         self.ur_global_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
         self.ur_local_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
         self.max_ur_goal_dist_change = 30 # 1.5 meter
-        self.ur_dist_reach_threshold = 10 # 0.5 meter
+        self.ur_dist_reach_threshold = 10 # 0.75 meter
         self.agent_cell_radius = agent_cell_radius
         self.total_look_around_steps = 360 // config.ENVIRONMENT.hfov + 1
         self.turn_angle_rad = 2 * np.pi / self.total_look_around_steps
+        self.goal_update_steps = 100
         self.max_num_changed_cells = (config.ENVIRONMENT.max_depth * 100 / config.AGENT.SEMANTIC_MAP.map_resolution)**2 / 10
-        
+
         """
         UR Exploration:
             0: go to ur goal (look around point)
@@ -169,7 +175,17 @@ class ObjectNavAgent(Agent):
         self.save_info_gain_data = kwargs.get('collect_data',False) # for training
        
         self.use_FBE_policy = kwargs.get('use_FBE_policy',False) or kwargs.get('eval_rl_nav',False) # for evaluation
-        
+
+        self.pn_agent = PNAgent(self.device)
+
+        self.use_ig_predictor = False
+        if self.use_ig_predictor:
+            self.ig_predictor = IGPredictor(f"data/checkpoints/igp/unet_c16_is1_dlis1_more",self.device)
+            # we afford more frequent updates for the predictor
+            self.goal_update_steps = 60
+            self.max_num_changed_cells = (config.ENVIRONMENT.max_depth * 100 / config.AGENT.SEMANTIC_MAP.map_resolution)**2 / 20
+            self._max_render_loc = 300
+
     def force_update_high_goal(self,e):
         self._force_goal_update_once[e] = True
 
@@ -311,7 +327,10 @@ class ObjectNavAgent(Agent):
             elif self._check_n_update_need_replan_ur_goal(e):
                 import time
                 start = time.time()
-                local_map_pos, global_pos, info = self._compute_info_gains(e)
+                if self.use_ig_predictor:
+                    local_map_pos, global_pos, info = self._compute_info_gains_igp(e)
+                else:
+                    local_map_pos, global_pos, info = self._compute_info_gains(e)
                 if local_map_pos is None:
                     continue
                 dist_map = self._get_dist_map(e)
@@ -537,6 +556,12 @@ class ObjectNavAgent(Agent):
                 debug=self.verbose,
             )
 
+        # test rl planner
+        # depth = torch.from_numpy(obs.depth).unsqueeze(0)
+        # goal = torch.tensor([-3.,0.]) # debug
+        # agent_pose = torch.from_numpy(np.concatenate([obs.gps,obs.compass],axis=0))
+        # action = self.pn_agent.plan(depth,goal,agent_pose)
+
         # t3 = time.time()
         # print(f"[Agent] Planning time: {t3 - t2:.2f}")
         # print(f"[Agent] Total time: {t3 - t0:.2f}")
@@ -552,6 +577,7 @@ class ObjectNavAgent(Agent):
             vis_inputs[0]["dilated_obstacle_map"] = dilated_obstacle_map
             vis_inputs[0]["probabilistic_map"] = self.semantic_map.get_probability_map(0)
             vis_inputs[0]["exp_coverage"] = self.semantic_map.get_exp_coverage_area(0)
+            vis_inputs[0]["close_coverage"] = self.semantic_map.get_close_coverage_area(0)
             # vis_inputs[0]["info_map"] = info_map
 
         info = {**planner_inputs[0], **vis_inputs[0]}
@@ -717,6 +743,37 @@ class ObjectNavAgent(Agent):
         
         return torch.from_numpy(fmm_dist).float().to(self.device)
         
+    def _compute_info_gains_igp(self,e):
+        exp_pos_all = self.semantic_map.get_explored_locs(e) # [N, 2]
+        if exp_pos_all.shape[0] == 0:
+            return None, None, None
+        n_p = exp_pos_all.shape[0]
+        print(f'Num of locations: {n_p}')
+        if n_p > self._max_render_loc:
+            if self._uniform_sampling:
+                rng = np.random.default_rng()
+                arr = np.arange(n_p)
+                rng.shuffle(arr)
+                exp_pos = exp_pos_all[arr[:self._max_render_loc]]
+            else:
+                exp_pos = sample_farthest_points(exp_pos_all.unsqueeze(0), K=self._max_render_loc)[0] # [1, N, 2]
+                exp_pos = exp_pos.squeeze(0) # [N, 2]
+
+        global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos)
+
+        voxel = self.semantic_map.get_global_voxel(e)
+        pred = self.ig_predictor.predict(voxel)
+        pred_ig = pred[0] #+ self._info_gain_alpha * pred[1]
+        info_at_locs = pred_ig[global_exp_pos_map_frame[:,0], global_exp_pos_map_frame[:,1]] # [N_locs]
+
+        info_sorted, idx = torch.sort(info_at_locs, descending=True)
+        local_exp_pos_map_frame = self.semantic_map.hab_world_to_map_local_frame(e, exp_pos)
+        local_exp_pos_map_frame = local_exp_pos_map_frame[idx] # sorted
+        local_exp_pos_map_frame_sorted = local_exp_pos_map_frame.clone()
+        exp_pos_sorted = exp_pos[idx]
+
+        return local_exp_pos_map_frame_sorted, exp_pos_sorted, info_sorted
+    
     def _compute_info_gains(self,e):
         """
         compute the info gains for 
@@ -823,6 +880,9 @@ class ObjectNavAgent(Agent):
 
             local_goal_map[local_exp_pos_map_frame[:,0], local_exp_pos_map_frame[:,1]] = 1.0
 
+        #################### debug IGP
+        # voxel = self.semantic_map.get_global_voxel(e)
+        # pred = self.ig_predictor.predict(voxel)
 
         return local_exp_pos_map_frame_sorted, exp_pos_sorted, info_sorted
 
@@ -853,9 +913,13 @@ class ObjectNavAgent(Agent):
 
         detection_results = None
         if self._use_probability_map:
+            relevance = torch.zeros(obs.task_observations['semantic_max_val']+1).to(self.device)
+            relevance[obs.task_observations['object_goal']] = 1
+            relevance[obs.task_observations['start_recep_goal']] = 0.7
             detection_results = {'scores':torch.tensor(obs.task_observations['instance_scores']).unsqueeze(0),
                                  'classes':torch.tensor(obs.task_observations['instance_classes']).unsqueeze(0),
-                                 'masks':torch.tensor(obs.task_observations['masks']).unsqueeze(0)}
+                                 'masks':torch.tensor(obs.task_observations['masks']).unsqueeze(0),
+                                 'relevance':relevance}
         curr_pose = np.array([obs.gps[0], obs.gps[1], obs.compass[0]])
         pose_delta = torch.tensor(
             pu.get_rel_pose_change(curr_pose, self.last_poses[0])

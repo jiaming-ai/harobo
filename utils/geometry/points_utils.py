@@ -82,7 +82,7 @@ def show_voxel(voxel_tensor):
     """
     
     voxel = voxel_tensor[0].permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
-    idx = torch.nonzero(~voxel.isnan()) # [N, 3]
+    idx = torch.nonzero(~voxel.isinf()) # [N, 3]
     feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
     pc = idx.float() # [N, 3]
     # pc[:,:2] -= self.global_map_size / 2 
@@ -97,7 +97,7 @@ def get_pc_from_voxel(voxel, res, agent_pose=np.array([0.,0.,0.])):
     args:
         voxel: tensor of size [B, X, Y, Z], in agent base frame, the coordinates are in map frame
     """
-    pc = torch.nonzero(~voxel.isnan()) # [N, 3]
+    pc = torch.nonzero(~voxel.isinf()) # [N, 3]
     pc = pc.float() * res + res / 2 # [N, 3] in cm
 
     pc = du.transform_pose_t(

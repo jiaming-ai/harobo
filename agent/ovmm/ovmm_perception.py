@@ -137,6 +137,6 @@ class OvmmPerception:
         obs.task_observations["masks"] = ret["masks"]
         if not self.config.GROUND_TRUTH_SEMANTICS:
             obs.semantic = ret['semantic']
-
-        self._process_obs(obs)
+            self._process_obs(obs)
+            
         return obs

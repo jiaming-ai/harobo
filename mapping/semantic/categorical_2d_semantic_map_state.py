@@ -157,8 +157,8 @@ class Categorical2DSemanticMapState:
         self.global_map[:, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
         self.local_map[:, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
         
-        self.global_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = torch.nan # marks as empty
-        self.local_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = torch.nan # marks as empty
+        self.global_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
+        self.local_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
 
     def update_frontier_map(self, e: int, frontier_map: np.ndarray):
         """Update the current exploration frontier."""
@@ -240,6 +240,10 @@ class Categorical2DSemanticMapState:
         voxel = self.local_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :].permute(2,1,0).cpu() # [H, W, C]
         return voxel
     
+    def get_global_voxel(self,e) -> torch.tensor:
+        """Get global voxel map for an environment."""
+        return self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :].clone() # [H, M, M]
+
     def get_local_pointcloud(self, e,transform_to_hab_world_frame=True, to_meter=True) -> torch.tensor:
         """Get cropped local point cloud for an environment."""
         # TODO: currently not current
@@ -248,11 +252,11 @@ class Categorical2DSemanticMapState:
         
         if transform_to_hab_world_frame:
             voxel = voxel.permute(2,1,0)
-            pc = torch.nonzero(~voxel.isnan()).float() # [N, 3]
+            pc = torch.nonzero(~voxel.isinf()).float() # [N, 3]
             pc[:,:2] += self.origins[e, 0:2:-1] # [N, 3], transform to global map frame
         else:
             voxel = voxel.permute(2,0,1)
-            pc = torch.nonzero(~voxel.isnan()).float() # [N, 3]
+            pc = torch.nonzero(~voxel.isinf()).float() # [N, 3]
             pc[:,:2] += self.origins[e, :2] # [N, 3], transform to global map frame
         
         pc[:,:2] -= self.global_map_size / 2
@@ -271,7 +275,7 @@ class Categorical2DSemanticMapState:
         """
         voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
         voxel = voxel.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
-        idx = torch.nonzero(~voxel.isnan()) # [N, 3]
+        idx = torch.nonzero(~voxel.isinf()) # [N, 3]
         feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
         pc = idx.float() # [N, 3]
         pc[:,:2] -= self.global_map_size / 2 
@@ -287,13 +291,13 @@ class Categorical2DSemanticMapState:
         """
         voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
         voxel = voxel.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
-        idx = torch.nonzero(~voxel.isnan()) # [N, 3]
+        idx = torch.nonzero(~voxel.isinf()) # [N, 3]
         return idx[:,0] * self.global_map_size * self.global_map_size + idx[:,1] * self.global_map_size + idx[:,2]
         
     def get_num_points(self, e) -> int:
         """Get number of points in global point cloud for an environment."""
         voxel = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
-        return torch.sum(~voxel.isnan()).item()
+        return torch.sum(~voxel.isinf()).item()
     
     def get_num_explored_cells(self, e) -> int:
         """Get number of explored cells in global map for an environment."""
@@ -315,7 +319,7 @@ class Categorical2DSemanticMapState:
         return np.copy(obstacle_map.cpu().float().numpy())
     
     def get_explored_locs(self, e) -> np.ndarray:
-        """Get local explored locations for an environment.
+        """Get global explored locations for an environment.
         Returns:
             exp_locs: tensor of shape [N, 2] in global hab frame (x: forward, y: left), unit: meter
             note this frame is defined by the agenet's starting position (origin is at the center of the map)
@@ -381,6 +385,11 @@ class Categorical2DSemanticMapState:
         """Get the total area of the map that is explored."""
         exp_area = (self.global_map[e, MC.EXPLORED_MAP, :, :] > 0).sum().item()
         return exp_area * self.resolution * self.resolution / 10000 # in m^2
+    
+    def get_close_coverage_area(self, e) -> float:
+        """Get the total area of the map that is explored."""
+        close_area = (self.global_map[e, MC.BEEN_CLOSE_MAP, :, :] > 0).sum().item()
+        return close_area * self.resolution * self.resolution / 10000 # in m^2
     
     def get_planner_pose_inputs(self, e) -> np.ndarray:
         """Get local planner pose inputs for an environment.
