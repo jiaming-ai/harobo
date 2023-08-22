@@ -15,6 +15,7 @@ from mapping.semantic.categorical_2d_semantic_map_state import (
 )
 
 from navigation_planner.discrete_planner import DiscretePlanner
+from navigation_planner.mpc_planner import MPCController
 import home_robot.utils.depth as du
 from home_robot.utils import rotation as ru
 import trimesh.transformations as tra
@@ -130,6 +131,9 @@ class ObjectNavAgent(Agent):
         self.one_hot_encoding = torch.eye(
             config.AGENT.SEMANTIC_MAP.num_sem_categories, device=self.device
         )
+
+        self.mpc_planner = MPCController()  # MPC planner
+        self.mpc_planner.setup_planner()
 
         
         self.timesteps = None
@@ -555,6 +559,36 @@ class ObjectNavAgent(Agent):
                 timestep=self.timesteps[0],
                 debug=self.verbose,
             )
+
+            # MPC Planner
+            # TODO: Set up planner first!! 
+            map_res = self.semantic_map.resolution
+            curr_pose = np.zeros(3)
+            # curr_pose = np.array([0., 0., 
+            #     np.deg2rad(self.semantic_map.global_pose.cpu().float().numpy()[0, 2])
+            # ])
+            ## CAUTION: This goal pose do not consider angles for now!!
+            rel_goal_pose = np.array([
+                self.ur_local_goal_pose.cpu().float().numpy()[0, 0, 0] * map_res / 100.0,
+                self.ur_local_goal_pose.cpu().float().numpy()[0, 0, 1] * map_res / 100.0,
+                0.
+            ])
+            # goal_pose = np.array([
+            #     self.ur_local_goal_pose.cpu().float().numpy()[0, 0, 0] * map_res / 100.0,
+            #     self.ur_local_goal_pose.cpu().float().numpy()[0, 0, 1] * map_res / 100.0,
+            #     # np.deg2rad(self.semantic_map.global_pose.cpu().float().numpy()[0, 2])
+            # ])
+            self.mpc_planner.plan(
+                state=curr_pose,
+                goal=rel_goal_pose,
+                obs_map=self.semantic_map.get_obstacle_map(0), 
+                map_params=self.semantic_map.map_size_parameters
+            )
+            # Take the first N planned waypoint move
+            action_mpc = ContinuousNavigationAction(
+                self.mpc_planner.planned_trj[2] * 100 // map_res
+            )
+            print("MPC Action:", action_mpc.xyt)
 
         # test rl planner
         # depth = torch.from_numpy(obs.depth).unsqueeze(0)
