@@ -252,6 +252,7 @@ class InteractiveEvaluator():
         pre_entropy = 0
         ep_idx = 0
         coverage_log_interval = 10
+        row2 = np.zeros((640,1920+640,3),dtype=np.uint8)
         ########################################
         # init evaluation metrics
         # only used for object navigation task
@@ -271,6 +272,7 @@ class InteractiveEvaluator():
         eps_step = 0
         
         while ep_idx < env.number_of_episodes:
+            
             eps_step += 1
             
             print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
@@ -285,7 +287,7 @@ class InteractiveEvaluator():
             entropy_list.append(agent_info["entropy"])
             close_coverage_list.append(agent_info["close_coverage"])
 
-            draw_ob = ob.rgb
+            # draw_ob = ob.rgb
 
             # # visualize GT semantic map
             # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
@@ -293,7 +295,8 @@ class InteractiveEvaluator():
 
             #  visualize detected instances
             if 'semantic_frame' in ob.task_observations:
-                draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
+                draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
+                draw_ob[:640,80:560,:] = ob.task_observations['semantic_frame']
             
             # # visualize objectness
             # if 'objectiveness_visualization' in ob.task_observations:
@@ -323,18 +326,24 @@ class InteractiveEvaluator():
                 draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
             
             # visualize info_gain map
-            if "info_map" in agent_info and agent_info['info_map'] is not None:
-                info_map = agent_info['info_map']
-                info_map = np.flipud(info_map)
-                info_map = cv2.resize(
-                    info_map,
-                    (640, 640),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                info_map = (info_map * 255).astype(np.uint8)
-                if info_map.ndim == 2:
-                    info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
-                draw_ob = np.concatenate([draw_ob, info_map], axis=1)
+            if "ig_vis" in agent_info:
+                ig_vis = agent_info['ig_vis']
+                if ig_vis is not None:
+                    width = row2.shape[1] // 3
+                    height = row2.shape[0]
+                    
+                    sz = min(width, height)
+                    vis_key=['cs','is','ig','utility']
+                    for i, k in enumerate(vis_key):
+                        img = ig_vis[k]
+                        img = cv2.resize(
+                            img,
+                            (sz, sz),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                        img = np.flipud(img)
+                        row2[:sz, i*sz:(i+1)*sz,:] = img[...,:3]
+                draw_ob = np.concatenate([draw_ob, row2], axis=0)
                 # draw
 
             if self.args.save_video:
@@ -397,6 +406,7 @@ class InteractiveEvaluator():
                 )
                 visualizer.reset()
                 ep_idx += 1
+                row2 = np.zeros_like(draw_ob)
 
                 # reset eval metrics
                 want_terminate = False
@@ -431,7 +441,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gpu_id",
         type=int,
-        default=1,
+        default=3,
         help="GPU id to use for evaluation",
     )
     parser.add_argument(
@@ -456,7 +466,7 @@ if __name__ == "__main__":
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=None,
+        default=[144],
     )
     parser.add_argument(
         "--eval_eps_total_num",
@@ -519,9 +529,10 @@ if __name__ == "__main__":
     print("Configs:")
     
 
-    overrides = []
-    config = get_habitat_config(args.habitat_config_path, overrides=overrides)
+    config = get_habitat_config(args.habitat_config_path, overrides=[])
     baseline_config = OmegaConf.load(args.baseline_config_path)
+    # extra_config = OmegaConf.from_dotlist(["AGENT.PLANNER.obs_dilation_selem_radius=3"])
+    # baseline_config = OmegaConf.merge(baseline_config, extra_config)
     config = DictConfig({**config, **baseline_config})
     evaluator = InteractiveEvaluator(config,args.gpu_id,args=args)
     print("-" * 100)

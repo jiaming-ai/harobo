@@ -17,16 +17,16 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 
 
-def draw_plt_image(img):
+def render_plt_image(data):
     fig = Figure(figsize=(8, 8))
     canvas = FigureCanvasAgg(fig)
     
-    if isinstance(img, torch.Tensor):
-        img = img.cpu().numpy()
+    if isinstance(data, torch.Tensor):
+        data = data.cpu().numpy()
 
     
     ax = fig.add_axes([0, 0, 1, 1], frameon=False, xticks=[], yticks=[])
-    ax.imshow(img,cmap='coolwarm')
+    ax.imshow(data,cmap='coolwarm',vmin=0,vmax=1.2)
     # ax.axis('off')
     # plt.gcf().delaxes(plt.gca())
     # fig.tight_layout()

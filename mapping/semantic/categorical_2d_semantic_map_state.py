@@ -129,6 +129,7 @@ class Categorical2DSemanticMapState:
         )
 
         self.prior = probability_prior
+        self.prior_logit = torch.logit(torch.tensor(self.prior))
         self.local_coords = np.array([self.local_map_size // 2, self.local_map_size // 2])
 
     
@@ -303,6 +304,10 @@ class Categorical2DSemanticMapState:
         """Get number of explored cells in global map for an environment."""
         return torch.sum(self.global_map[e, MC.EXPLORED_MAP, :, :]).item()
     
+    def get_num_promising_cells(self, e) -> int:
+        """Get number of promising cells in global map for an environment."""
+        return torch.sum(self.global_map[e, MC.PROBABILITY_MAP, :, :] > self.prior_logit).item()
+    
     def get_dialated_obstacle_map_local(self, e, size=0) -> np.ndarray:
         """Get dialated local obstacle map for an environment."""
         obstacle_map = self.local_map[e, MC.OBSTACLE_MAP, :, :]
@@ -316,7 +321,8 @@ class Categorical2DSemanticMapState:
         obstacle_map = self.global_map[e, MC.OBSTACLE_MAP, :, :].clone()
         obstacle_map = dialate_tensor(obstacle_map.unsqueeze(0), size)[0]
         obstacle_map = obstacle_map > 0
-        return np.copy(obstacle_map.cpu().float().numpy())
+        return obstacle_map
+        
     
     def get_explored_locs(self, e) -> np.ndarray:
         """Get global explored locations for an environment.
@@ -380,6 +386,17 @@ class Categorical2DSemanticMapState:
                               max=self.local_map_size - 1) # in grids, local map frame: x: right, y: down
         return pos_map.long()
     
+    def local_map_coords_to_hab_world_frame(self, e, pos):
+        """
+        Args:
+            pos: tensor of shape [N, 2] in local map frame (x: right, y: down), 
+        Returns:
+            pos: tensor of shape [N, 2] in habitat world frame (x: forward, y: left), unit: meter
+        """
+        pos = pos[:, [1, 0]] * self.resolution / 100 
+        pos = pos + self.origins[e, :2] # [N, 2], transform to global hab frame
+        pos = pos - self.global_map_size_cm / 2 / 100 # [N, 2], transform to global hab frame
+        return pos
     
     def get_exp_coverage_area(self, e) -> float:
         """Get the total area of the map that is explored."""

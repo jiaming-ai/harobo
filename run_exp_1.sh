@@ -27,5 +27,27 @@
 
 
 
-python eval_agent.py --save_video --no_render --no_interactive --eval_eps_total_num 20 \
-                        --exp_name ur_detic_igp --eval_policy ur --gpu_id 1
+# python eval_agent.py --save_video --no_render --no_interactive --eval_eps_total_num 20 \
+#                         --exp_name ur_detic_igp --eval_policy ur --gpu_id 1
+
+trap 'kill 0' SIGINT
+exp_name=("0.01" "0.05")
+
+for exn in "${exp_name[@]}"
+do
+    python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+                        --exp_name igp_util_$exn --save_video \
+                        --eval_policy ur --gpu_id 1 +AGENT.IG_PLANNER.util_lambda=$exn &
+done
+
+
+
+# exp_name=(3 2)
+
+# for exn in "${exp_name[@]}"
+# do
+#     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name igp_planner_dialate_$exn --save_video \
+#                         --eval_policy ur --gpu_id 1 AGENT.PLANNER.obs_dilation_selem_radius=$exn &
+# done
+wait

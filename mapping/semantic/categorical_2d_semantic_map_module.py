@@ -15,7 +15,7 @@ from torch.nn import functional as F
 
 import home_robot.mapping.map_utils as mu
 from utils.geometry import depth as du
-from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel
+from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel_with_prob
 import home_robot.utils.pose as pu
 import home_robot.utils.rotation as ru
 from mapping.semantic.constants import MapConstants as MC

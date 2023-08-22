@@ -162,7 +162,7 @@ def splat_feat_nd(init_grid, feat, coords):
         src = (feat * wts).to(grid_flat.dtype)
         grid_flat.scatter_add_(2, index, src)
 
-    grid_flat = torch.round(grid_flat)
+    # grid_flat = torch.round(grid_flat)
 
     return grid_flat.view(init_grid.shape)
 

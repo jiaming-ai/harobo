@@ -13,7 +13,7 @@ from utils.visualization import (
     visualize_gt,
     visualize_pred,
     save_img_tensor)
-from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel
+from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel_with_prob
 
 
 class IGPredictor():

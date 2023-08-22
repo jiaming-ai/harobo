@@ -262,6 +262,7 @@ class InteractiveEvaluator():
         recorder = Recording()
         result_dir = f'datadump/exp_results/{self.args.exp_name}/'
         os.makedirs(result_dir, exist_ok=True)
+        util_img = np.zeros((640,640,3),dtype=np.uint8)
 
         want_terminate = False
         forward_steps = 0
@@ -288,7 +289,6 @@ class InteractiveEvaluator():
             close_coverage_list.append(agent_info["close_coverage"])
 
             if visualize:
-                draw_ob = ob.rgb
 
                 # # visualize GT semantic map
                 # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
@@ -296,11 +296,9 @@ class InteractiveEvaluator():
 
                 #  visualize detected instances
                 if 'semantic_frame' in ob.task_observations:
-                    draw_ob = np.concatenate([draw_ob, ob.task_observations['semantic_frame']], axis=1)
+                    draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
+                    draw_ob[:640,80:560,:] = ob.task_observations['semantic_frame']
                 
-                # # visualize objectness
-                # if 'objectiveness_visualization' in ob.task_observations:
-                #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
                 
                 # visualize semantic map
                 vis = visualizer.visualize(**agent_info)
@@ -326,18 +324,19 @@ class InteractiveEvaluator():
                     draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
                 
                 # visualize info_gain map
-                if "info_map" in agent_info and agent_info['info_map'] is not None:
-                    info_map = agent_info['info_map']
-                    info_map = np.flipud(info_map)
-                    info_map = cv2.resize(
-                        info_map,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    info_map = (info_map * 255).astype(np.uint8)
-                    if info_map.ndim == 2:
-                        info_map = cv2.cvtColor(info_map, cv2.COLOR_GRAY2BGR)
-                    draw_ob = np.concatenate([draw_ob, info_map], axis=1)
+                
+                if "ig_vis" in agent_info:
+                    ig_vis = agent_info['ig_vis']
+                    if ig_vis is not None:
+                        util_img = ig_vis['utility']
+                        util_img = cv2.resize(
+                            util_img,
+                            (640, 640),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                        util_img = np.flipud(util_img)
+                    draw_ob[:,640:1280,:] = util_img[:,:,:3]
+
                     # draw
 
             if self.args.save_video:
@@ -522,9 +521,10 @@ if __name__ == "__main__":
     print("Configs:")
     
 
-    overrides = []
-    config = get_habitat_config(args.habitat_config_path, overrides=overrides)
+    config = get_habitat_config(args.habitat_config_path, overrides=[])
     baseline_config = OmegaConf.load(args.baseline_config_path)
+    extra_config = OmegaConf.from_cli(args.opts)
+    baseline_config = OmegaConf.merge(baseline_config, extra_config)
     config = DictConfig({**config, **baseline_config})
     evaluator = InteractiveEvaluator(config,args.gpu_id,args=args)
     print("-" * 100)

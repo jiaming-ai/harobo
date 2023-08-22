@@ -67,7 +67,7 @@ def show_points_with_prob(points,feat):
     # > logit(0.5)
     color[feat.squeeze(1) >= 0.5] = torch.tensor([1,0,0],dtype=torch.float32, device=points.device) # red
     # < logit(0.5) and > logit(0.2)
-    color[(feat.squeeze(1) <0.5) & (feat.squeeze(1)>=0.2) ] = torch.tensor([0,0,1],dtype=torch.float32, device=points.device) # blue
+    color[(feat.squeeze(1) <0.5) & (feat.squeeze(1)>=1e-3) ] = torch.tensor([0,0,1],dtype=torch.float32, device=points.device) # blue
     point_cloud = Pointclouds(points=[points], features=[color])
     fig = plot_scene({
         "Pointcloud": {
@@ -76,12 +76,32 @@ def show_points_with_prob(points,feat):
     })
     fig.show()
 
-def show_voxel(voxel_tensor):
+def show_voxel_with_logit(voxel_tensor):
     """
     voxel_tensor: B x Z x X x Y
     """
+    if voxel_tensor.dim() == 4:
+        voxel_tensor = voxel_tensor[0]
     
-    voxel = voxel_tensor[0].permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
+    voxel = voxel_tensor.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
+    idx = torch.nonzero(~voxel.isinf()) # [N, 3]
+    feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
+    feat = torch.sigmoid(feat)
+    pc = idx.float() # [N, 3]
+    # pc[:,:2] -= self.global_map_size / 2 
+    # pc = pc * self.resolution + self.resolution / 2 # [N, 3] 
+    # pc = pc / 100 # [N, 3] in meter    
+
+    show_points_with_prob(pc,feat)
+
+def show_voxel_with_prob(voxel_tensor):
+    """
+    voxel_tensor: B x Z x X x Y
+    """
+    if voxel_tensor.dim() == 4:
+        voxel_tensor = voxel_tensor[0]
+    
+    voxel = voxel_tensor.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
     idx = torch.nonzero(~voxel.isinf()) # [N, 3]
     feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
     pc = idx.float() # [N, 3]
