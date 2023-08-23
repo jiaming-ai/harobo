@@ -272,6 +272,8 @@ class InteractiveEvaluator():
         entropy_list = []
         close_coverage_list = []
         eps_step = 0
+        pre_pose = np.zeros(2)
+        total_dist = 0
         
         while ep_idx < env.number_of_episodes:
             eps_step += 1
@@ -358,10 +360,10 @@ class InteractiveEvaluator():
             if agent_info["skill_done"] != '':
                 want_terminate = True
                 done = True
-            elif action == DiscreteNavigationAction.MOVE_FORWARD:
-                forward_steps += 1
-            print(action)
             
+            dist = np.linalg.norm(ob.gps - pre_pose)
+            total_dist += dist
+            pre_pose = ob.gps
             
             if done:
                 print(f"Episode {ep_idx} finished.")
@@ -374,11 +376,11 @@ class InteractiveEvaluator():
                     'scene_id': current_episodes_info.scene_id,
                     'success': info['ovmm_nav_to_pick_succ'],
                     'distance_to_goal': info['ovmm_dist_to_pick_goal'],
-                    'travelled_distance': forward_steps * self.config.ENVIRONMENT.forward,
+                    'travelled_distance': total_dist,
                     'steps': info['num_steps'],
                     'want_terminate': want_terminate,
                     'goal_object': ob.task_observations["goal_name"],
-                    'spl': init_dts / max(forward_steps * self.config.ENVIRONMENT.forward, init_dts),
+                    'spl': init_dts / max(total_dist, init_dts),
                     'total_nav_area': total_nav_area,
                     'exp_coverage': exp_coverage_list,
                     'checking_area': checking_area_list,
@@ -409,6 +411,8 @@ class InteractiveEvaluator():
                 entropy_list = []
                 close_coverage_list = []
                 eps_step = 0
+                total_dist = 0
+                pre_pose = np.zeros(2)
 
                 print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')

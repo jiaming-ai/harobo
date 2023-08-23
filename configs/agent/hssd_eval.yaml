@@ -3,7 +3,7 @@ NUM_ENVIRONMENTS: 1       # number of environments (per agent process)
 DUMP_LOCATION: datadump   # path to dump models and log
 EXP_NAME: eval_hssd       # experiment name
 VISUALIZE: 0              # 1: render observation and predicted semantic map, 0: no visualization
-PRINT_IMAGES: 1           # 1: save visualization as images, 0: no image saving
+PRINT_IMAGES: 0           # 1: save visualization as images, 0: no image saving
 GROUND_TRUTH_SEMANTICS: 0 # 1: use ground-truth semantics (for debugging / ablations)
 seed: 0                   # seed
 SHOW_RL_OBS: True         # whether to show the observations passed to RL policices, for debugging
@@ -207,6 +207,9 @@ AGENT:
     igp_model_dir: "data/checkpoints/igp/unet_c16_is10_dlis10_more"
     util_lambda: 0.01 # controls how much to prioritize the ur goal close to the robot
     random_ur_goal: False # whether to use a random ur goal or not
+    use_ig_predictor: True # whether to use the information gain predictor or not
+    other_ig_type: 'ray_casting' # if not using the predictor, use ray casting or rendering
+    utility_exp: True # whether to use exponential function in the utility computation, if not, use inverse
 
 EVAL_VECTORIZED:
   simulator_gpu_ids: [3] # IDs of GPUs to use for vectorized environments

@@ -21,15 +21,15 @@ import matplotlib.pyplot as plt
 
 # Util function for loading point clouds|
 import numpy as np
-
+import random
 import torch
 import home_robot.utils.depth as du
 from home_robot.utils import rotation as ru
 
 from pytorch3d.ops import sample_farthest_points
 import torch.nn as nn
-from .points_utils import convert_to_pytorch3d_frame
-from .points_utils import show_points,show_points_with_prob, show_points_with_logit
+from utils.points_utils import convert_to_pytorch3d_frame
+from utils.visualization import show_points,show_points_with_prob, show_points_with_logit
 from utils.visualization import (
     display_grayscale,
     display_rgb,
@@ -44,7 +44,7 @@ from utils.visualization import (
 # from .pulsar_renderer import PulsarPointsRenderer
 from .pulsar_unified import PulsarPointsRenderer
 
-class DRPlanner(nn.Module):
+class IGRender(nn.Module):
     """
     Uncertainty reduction planning by differentiable rendering
     We use Pulsar renderer for rendering (https://arxiv.org/abs/2004.07484)
@@ -248,7 +248,7 @@ class DRPlanner(nn.Module):
         args:
             points: tensor of size [1, P, 3] of [x, y, z] in the world frame defined in the hab frame
             feats: tensor of size [1, P, 1]
-            agent_pose: tensor of size [N, 2] of [x, y]
+            agent_pose: tensor of size [N, 2] of [x, y] in the hab frame
         """
         # feats = torch.sigmoid(feats) # [1, P, 1], converts to probs
         # points = convert_to_pytorch3d_frame(points) * 10 # pt3d world frame, [1, P, 3]
@@ -266,9 +266,10 @@ class DRPlanner(nn.Module):
         #     feat_list.extend(feats[0][vr_idx[i]] * n_view_per_loc)
 
         points = convert_to_pytorch3d_frame(points) *10 # pt3d world frame
-        feats = torch.sigmoid(feats) # [1, P, 1], converts to probs
+        # feats = torch.sigmoid(feats) # [1, P, 1], converts to probs
 
-        R, T, n_view_per_loc = self.get_panoramic_camera_matrix(agent_pose) # [bs, 3, 3], [bs, 3]
+        R, T, theta_list = self.get_panoramic_camera_matrix(agent_pose) # [bs, 3, 3], [bs, 3]
+        n_view_per_loc = len(theta_list)
         N = agent_pose.shape[0] # this is the number of locations
         bs = R.shape[0] # this is the total number of views needed to be rendered
 
@@ -295,10 +296,9 @@ class DRPlanner(nn.Module):
                                             max_n_hits=5,
                                             T=T,)
         c_s, i_s = self._process_rendered_info(images.squeeze(-1))
-        info_at_locs = (c_s+10*i_s).view(N, n_view_per_loc).sum(-1) # [N_locs]
 
-        
-
+        c_s_sum = c_s.view(N, n_view_per_loc).sum(-1) # [N_locs]
+        i_s_sum = i_s.view(N, n_view_per_loc).sum(-1) # [N_locs]
 
         if self.visualize:
             images, rets = self.renderer.forward(pc,
@@ -323,8 +323,57 @@ class DRPlanner(nn.Module):
                 for j in range(m):
                     axes[i,j].imshow(images[i*m+j,...,0].detach().cpu().numpy())
 
+        result = {
+            'coverage_info': c_s_sum,
+            'promising_info': i_s_sum,
+            'theta_list': theta_list,
+            'raw_c_s': c_s,
+            'raw_i_s': i_s,
+        }
+        return result
+    
+    # def get_training_data(self, points, feats, agent_pose, n_views=5):
+    #     """ generate training data for the network
+    #     args:
+    #         points: tensor of size [1, P, 3] of [x, y, z] in the world frame defined in the hab frame
+    #         feats: tensor of size [1, P, 1]
+    #         agent_pose: tensor of size [N, 2] of [x, y] in the hab frame
+    #         n_views: number of views per location
+    #     """
 
-        return info_at_locs
+    #     points = convert_to_pytorch3d_frame(points) *10 # pt3d world frame
+    #     feats = torch.sigmoid(feats) # [1, P, 1], converts to probs
+
+    #     R, T, n_view_per_loc = self.get_panoramic_camera_matrix(agent_pose) # [bs, 3, 3], [bs, 3]
+    #     N = agent_pose.shape[0] # this is the number of locations
+    #     bs = R.shape[0] # this is the total number of views needed to be rendered
+
+    #     points = points.expand(bs,-1,-1) 
+    #     feats = feats.expand(bs,-1,-1)
+
+    #     T = T * 10
+    #     gamma = [1e-4 for _ in range(bs)] # we can use small gamma if we don't need differentiable depth
+    #     znear = [1 for _ in range(bs)]
+    #     zfar = [100.0 for _ in range(bs)]
+    #     fov = [self.camera_hfov for _ in range(bs)]
+    #     aspect_ratio = [self.screen_width/self.screen_height for _ in range(bs)]
+
+    #     pc = Pointclouds(points=points, features=feats)
+    #     # pc = Pointclouds(points=point_list, features=feat_list)
+        
+    #     images = self.renderer.forward(pc,
+    #                                         gamma=gamma,
+    #                                         znear=znear,
+    #                                         zfar=zfar,
+    #                                         fov=fov,
+    #                                         aspect_ratio=aspect_ratio,
+    #                                         R=R,
+    #                                         max_n_hits=5,
+    #                                         T=T,)
+    #     c_s, i_s = self._process_rendered_info(images.squeeze(-1))
+
+    #     return c_s, i_s,
+       
 
     def get_camera_matrix(self, agent_pose : torch.tensor) -> torch.Tensor:
         """
@@ -372,26 +421,26 @@ class DRPlanner(nn.Module):
         """
         Generate camera matrics for panoramic rendering.
         Note: the camera frame is defined in the hab frame.
-
+        We randomly start from a random angle, and then rotate the camera frame by the camera hfov
         Args:
             agent_pose: tensor of size [N, 3] of [x, y, theta] or [N, 2] of [x, y]
         """
         # TODO: how to solve the overlap problem?
-        n_view_per_loc = int(360 / self.camera_hfov) + 1
+        n_view_per_loc = int(360 / self.camera_hfov) + 1 # 9
         bs = agent_pose.shape[0]
-
-        # TODO: vectorize this
-        # tehta_tensor = torch.linspace(0, 2*np.pi, n_view_per_loc).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [N, n_view_per_loc]
-        # agent_pose_tensor = agent_pose.unsqueeze(1).repeat(1, n_view_per_loc, 1) # [N, n_view_per_loc, 3]
-        # agent_pose_tensor[:,:,2] = tehta_tensor # [N, n_view_per_loc, 3]
-        # R_vec, T_vec = self.get_camera_matrix(agent_pose_tensor.view(-1, 3)) # [N*n_view_per_loc, 3, 3], [N*n_view_per_loc, 3]
      
-
         R_list = []
         T_list = []
-        fov_rad = self.camera_hfov * np.pi / 180
+        turn_rad = np.pi * 2 / n_view_per_loc # 40 deg
+        bin_rad = np.pi * 2 / 36 #  10 deg
+
+        random_start_bin_num = random.randint(0,turn_rad/bin_rad-1) # [0, 3]
+        random_start_rad = random_start_bin_num * bin_rad # [0, 30 deg]
+        theta_list = []
         for i in range(n_view_per_loc):
-            theta = torch.tensor([i * fov_rad]).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [1,1]
+            theta_list.append(random_start_rad + i * turn_rad)
+            theta = torch.tensor([random_start_rad + i * turn_rad]).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [1,1]
+            
             agent_pose = torch.cat([agent_pose[:,:2], theta], dim=1) # [N, 3]
             R, T = self.get_camera_matrix(agent_pose)
             R_list.append(R)
@@ -400,4 +449,37 @@ class DRPlanner(nn.Module):
         R = torch.stack(R_list, dim=1).view(-1, 3, 3) # [bs*n_view_per_loc, 3, 3]
         T = torch.stack(T_list, dim=1).view(-1, 3)
 
-        return R, T, n_view_per_loc
+        return R, T, theta_list, 
+    
+
+    # def get_random_camera_matrix(self, agent_pose: torch.tensor, n_view_per_loc: int) -> torch.tensor:
+    #     """
+    #     Generate camera matrics for training urp network.
+    #     Note: the camera frame is defined in the hab frame.
+
+    #     Args:
+    #         agent_pose: tensor of size [N, 3] of [x, y, theta] or [N, 2] of [x, y]
+    #     """
+    #     bs = agent_pose.shape[0]
+
+    #     # TODO: vectorize this
+    #     # tehta_tensor = torch.linspace(0, 2*np.pi, n_view_per_loc).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [N, n_view_per_loc]
+    #     # agent_pose_tensor = agent_pose.unsqueeze(1).repeat(1, n_view_per_loc, 1) # [N, n_view_per_loc, 3]
+    #     # agent_pose_tensor[:,:,2] = tehta_tensor # [N, n_view_per_loc, 3]
+    #     # R_vec, T_vec = self.get_camera_matrix(agent_pose_tensor.view(-1, 3)) # [N*n_view_per_loc, 3, 3], [N*n_view_per_loc, 3]
+     
+
+    #     R_list = []
+    #     T_list = []
+    #     fov_rad = self.camera_hfov * np.pi / 180
+    #     for i in range(n_view_per_loc):
+    #         theta = torch.tensor([i * fov_rad]).unsqueeze(0).repeat(bs,1).to(agent_pose.device) # [1,1]
+    #         agent_pose = torch.cat([agent_pose[:,:2], theta], dim=1) # [N, 3]
+    #         R, T = self.get_camera_matrix(agent_pose)
+    #         R_list.append(R)
+    #         T_list.append(T)
+        
+    #     R = torch.stack(R_list, dim=1).view(-1, 3, 3) # [bs*n_view_per_loc, 3, 3]
+    #     T = torch.stack(T_list, dim=1).view(-1, 3)
+
+    #     return R, T, n_view_per_loc

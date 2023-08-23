@@ -30,6 +30,8 @@ from utils.visualization import (
     visualize_gt,
     visualize_pred,
     save_img_tensor)
+from .planning.rrt_star import RRTStar
+
 
 @dataclass
 class PPOAgentConfig:
@@ -352,3 +354,57 @@ class PNAgent():
         self.hidden_state = torch.zeros_like(self.hidden_state)
         self.prev_actions = torch.zeros_like(self.prev_actions)
         self.t = 0
+    
+    def get_rrt_goal(self, pose_coords, goal, grid, ensemble, prev_path):
+        probability_map, indexes = torch.max(grid,dim=1)
+        probability_map = probability_map[0]
+        indexes = indexes[0]
+        binarymap = (indexes == 1)
+        start = [int(pose_coords[0][0][1]), int(pose_coords[0][0][0])]
+        finish = [int(goal[0][0][1]), int(goal[0][0][0])]
+        rrt_star = RRTStar(start=start, 
+                           obstacle_list=None, 
+                           goal=finish, 
+                           rand_area=[0,binarymap.shape[0]], 
+                           max_iter=self.options.rrt_max_iters,
+                           expand_dis=self.options.expand_dis,
+                           goal_sample_rate=self.options.goal_sample_rate,
+                           connect_circle_dist=self.options.connect_circle_dist,
+                           occupancy_map=binarymap)
+        best_path = None
+        
+        path_dict = {'paths':[], 'value':[]} # visualizing all the paths
+        if self.options.exploration:
+            paths = rrt_star.planning(animation=False, use_straight_line=self.options.rrt_straight_line, exploration=self.options.exploration, horizon=self.options.reach_horizon)
+            ## evaluate each path on the exploration objective
+            path_sum_var = self.eval_path_expl(ensemble, paths)
+            path_dict['paths'] = paths
+            path_dict['value'] = path_sum_var
+
+            best_path_var = 0 # we need to select the path with maximum overall uncertainty
+            for i in range(len(paths)):
+                if path_sum_var[i] > best_path_var:
+                    best_path_var = path_sum_var[i]
+                    best_path = paths[i]
+
+        else:
+            best_path_reachability = float('inf')        
+            for i in range(self.options.rrt_num_path):
+                path = rrt_star.planning(animation=False, use_straight_line=self.options.rrt_straight_line)
+                if path:
+                    if self.options.rrt_path_metric == "reachability":
+                        reachability = self.eval_path(ensemble, path, prev_path)
+                    elif self.options.rrt_path_metric == "shortest":
+                        reachability = len(path)
+                    path_dict['paths'].append(path)
+                    path_dict['value'].append(reachability)
+                    
+                    if reachability < best_path_reachability:
+                        best_path_reachability = reachability
+                        best_path = path
+
+        if best_path:
+            best_path.reverse()
+            last_node = min(len(best_path)-1, self.options.reach_horizon)
+            return torch.tensor([[[int(best_path[last_node][1]), int(best_path[last_node][0])]]]).cuda(), best_path, path_dict
+        return None, None, None

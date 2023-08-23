@@ -13,7 +13,11 @@ from utils.visualization import (
     draw_top_down_map, 
     Recording, 
     visualize_gt,
+    render_plt_image,
     visualize_pred,
+    show_points, 
+    show_voxel_with_prob, 
+    show_voxel_with_logit,
     save_img_tensor)
 
 

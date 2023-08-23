@@ -4,7 +4,6 @@ import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
-from agent.obj_nav_ura.urp.points_utils import show_points,show_points_with_prob, show_points_with_logit, show_voxel_dataset
 from utils.visualization import (
     display_grayscale,
     display_rgb,
@@ -13,7 +12,11 @@ from utils.visualization import (
     draw_top_down_map, 
     Recording, 
     visualize_gt,
+    render_plt_image,
     visualize_pred,
+    show_points,  
+    show_voxel_with_prob, 
+    show_voxel_with_logit,
     save_img_tensor)
 
 
@@ -132,8 +135,9 @@ class URPDataset(Dataset):
 
                 x_length = x_max - x_min + 1
                 y_length = y_max - y_min + 1
-                if x_length > crop_size or y_length > crop_size:
-                    raise ValueError("crop size is too small")
+                
+                # if x_length > crop_size or y_length > crop_size:
+                #     raise ValueError("crop size is too small")
                 
                 x_center = (x_min + x_max) // 2
                 y_center = (y_min + y_max) // 2

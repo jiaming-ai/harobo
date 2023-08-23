@@ -252,9 +252,6 @@ class Visualizer:
             semantic_category_mapping: contains category id to category mapping and color palette
             rl_obs_frame: variable sized image containing all observations passed to RL (useful for debugging)
         """
-        # Do nothing if visualization is off
-        if not self.show_images and not self.print_images:
-            return
 
         if semantic_category_mapping is not None:
             self.semantic_category_mapping = semantic_category_mapping

@@ -14,7 +14,12 @@ import os
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from pytorch3d.structures import Pointclouds
+from pytorch3d.vis.plotly_vis import AxisArgs, plot_batch_individually, plot_scene
 
+import numpy as np
+import torch
+from pytorch3d.ops import sample_farthest_points
 
 
 def render_plt_image(data):
@@ -318,6 +323,7 @@ def visualize_gt(rgb,depth,map, gt_local,pred_local):
     img = np.array(img)
 
     return img
+
 class Recording():
     def __init__(self) -> None:
         self._images = []
@@ -333,3 +339,85 @@ class Recording():
     def save_video(self,fname, dir='recordings'):
         images_to_video(self._images, dir, fname)
         self._images = []
+
+
+
+def show_points(points,feats=None):
+    point_cloud = Pointclouds(points=[points], features=feats)
+    fig = plot_scene({
+        "Pointcloud": {
+            "scene": point_cloud,
+        }
+    })
+    fig.show()
+
+def show_points_with_logit(points,feat):
+    """
+    points: N x 3
+    feat: N x 1, logits
+    """
+    color = torch.zeros_like(points) # N x 3
+    # > logit(0.5)
+    color[feat.squeeze(1) >= 0] = torch.tensor([1,0,0],dtype=torch.float32, device=points.device) # red
+    # < logit(0.5) and > logit(0.2)
+    color[(feat.squeeze(1) <0) & (feat.squeeze(1)>=-1.39) ] = torch.tensor([0,0,1],dtype=torch.float32, device=points.device) # blue
+    point_cloud = Pointclouds(points=[points], features=[color])
+    fig = plot_scene({
+        "Pointcloud": {
+            "scene": point_cloud,
+        }
+    })
+    fig.show()
+
+def show_points_with_prob(points,feat):
+    """
+    points: N x 3
+    feat: N x 1, logits
+    """
+    color = torch.zeros_like(points) # N x 3
+    # > logit(0.5)
+    color[feat.squeeze(1) >= 0.5] = torch.tensor([1,0,0],dtype=torch.float32, device=points.device) # red
+    # < logit(0.5) and > logit(0.2)
+    color[(feat.squeeze(1) <0.5) & (feat.squeeze(1)>=1e-3) ] = torch.tensor([0,0,1],dtype=torch.float32, device=points.device) # blue
+    point_cloud = Pointclouds(points=[points], features=[color])
+    fig = plot_scene({
+        "Pointcloud": {
+            "scene": point_cloud,
+        }
+    })
+    fig.show()
+
+def show_voxel_with_logit(voxel_tensor):
+    """
+    voxel_tensor: B x Z x X x Y
+    """
+    if voxel_tensor.dim() == 4:
+        voxel_tensor = voxel_tensor[0]
+    
+    voxel = voxel_tensor.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
+    idx = torch.nonzero(~voxel.isinf()) # [N, 3]
+    feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
+    feat = torch.sigmoid(feat)
+    pc = idx.float() # [N, 3]
+    # pc[:,:2] -= self.global_map_size / 2 
+    # pc = pc * self.resolution + self.resolution / 2 # [N, 3] 
+    # pc = pc / 100 # [N, 3] in meter    
+
+    show_points_with_prob(pc,feat)
+
+def show_voxel_with_prob(voxel_tensor):
+    """
+    voxel_tensor: B x Z x X x Y
+    """
+    if voxel_tensor.dim() == 4:
+        voxel_tensor = voxel_tensor[0]
+    
+    voxel = voxel_tensor.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
+    idx = torch.nonzero(~voxel.isinf()) # [N, 3]
+    feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
+    pc = idx.float() # [N, 3]
+    # pc[:,:2] -= self.global_map_size / 2 
+    # pc = pc * self.resolution + self.resolution / 2 # [N, 3] 
+    # pc = pc / 100 # [N, 3] in meter    
+
+    show_points_with_prob(pc,feat)

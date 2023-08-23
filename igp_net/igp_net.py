@@ -7,20 +7,20 @@ from ocnn.octree import Octree
 # from .igp_net import OCResNet, OCLeNet
 from .unet import UNetBackBone
 from .resnet import ResNetBackbone
-from agent.obj_nav_ura.urp.points_utils import show_points,show_points_with_prob, show_points_with_logit, show_voxel_dataset
 from utils.visualization import (
     display_grayscale,
     display_rgb,
     plot_image,
-    plot_multiple_images,
     save_image, 
     draw_top_down_map, 
     Recording, 
     visualize_gt,
+    render_plt_image,
     visualize_pred,
+    show_points,  
+    show_voxel_with_prob, 
+    show_voxel_with_logit,
     save_img_tensor)
-
-
 
 
 class IGPNet(nn.Module):

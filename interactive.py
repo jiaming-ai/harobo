@@ -171,6 +171,7 @@ class InteractiveEvaluator():
     def eval(self, num_episodes_per_env=10):
      
         self.env = create_ovmm_env_fn(self.config,self.args)
+        visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
         print(f'Env created')
         agent = OVMMAgent(
             config=self.config,
@@ -181,6 +182,7 @@ class InteractiveEvaluator():
             eval_rl_nav=(config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"),
             use_FBE_policy=self.args.eval_policy == 'fbe',
             sim=self.env.habitat_env.env._env.habitat_env.sim, # TODO: remove this
+            visualize=visualize,
         )
 
         print(f'Agent created')
@@ -270,6 +272,8 @@ class InteractiveEvaluator():
         entropy_list = []
         close_coverage_list = []
         eps_step = 0
+        pre_pose = np.zeros(2)
+        total_dist = 0
         
         while ep_idx < env.number_of_episodes:
             
@@ -365,9 +369,10 @@ class InteractiveEvaluator():
             if agent_info["skill_done"] != '':
                 want_terminate = True
                 done = True
-            elif action == DiscreteNavigationAction.MOVE_FORWARD:
-                forward_steps += 1
-            print(action)
+            dist = np.linalg.norm(ob.gps - pre_pose)
+            total_dist += dist
+            pre_pose = ob.gps
+            # print(action)
             
             
             if done:
@@ -381,11 +386,11 @@ class InteractiveEvaluator():
                     'scene_id': current_episodes_info.scene_id,
                     'success': info['ovmm_nav_to_pick_succ'],
                     'distance_to_goal': info['ovmm_dist_to_pick_goal'],
-                    'travelled_distance': forward_steps * self.config.ENVIRONMENT.forward,
+                    'travelled_distance': total_dist,
                     'steps': info['num_steps'],
                     'want_terminate': want_terminate,
                     'goal_object': ob.task_observations["goal_name"],
-                    'spl': init_dts / max(forward_steps * self.config.ENVIRONMENT.forward, init_dts),
+                    'spl': init_dts / max(total_dist, init_dts),
                     'total_nav_area': total_nav_area,
                     'exp_coverage': exp_coverage_list,
                     'checking_area': checking_area_list,
@@ -417,6 +422,8 @@ class InteractiveEvaluator():
                 entropy_list = []
                 close_coverage_list = []
                 eps_step = 0
+                total_dist = 0
+                pre_pose = np.zeros(2)
 
                 print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')
@@ -466,7 +473,7 @@ if __name__ == "__main__":
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[144],
+        default=[86],
     )
     parser.add_argument(
         "--eval_eps_total_num",
@@ -511,7 +518,7 @@ if __name__ == "__main__":
         "--gt_semantic",
         help="whether to use ground truth semantic map",
         action="store_true",
-        default=False,    
+        default=True,    
     )
     parser.add_argument(
         "--no_use_prob_map",

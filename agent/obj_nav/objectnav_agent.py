@@ -23,7 +23,6 @@ from .objectnav_agent_module import ObjectNavAgentModule
 # For visualizing exploration issues
 debug_frontier_map = False
 
-
 class ObjectNavAgent(Agent):
     """Simple object nav agent based on a 2D semantic map"""
 

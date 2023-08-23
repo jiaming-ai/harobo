@@ -14,8 +14,7 @@ from torch import IntTensor, Tensor
 from torch.nn import functional as F
 
 import home_robot.mapping.map_utils as mu
-from utils.geometry import depth as du
-from utils.geometry.points_utils import show_points, get_pc_from_voxel, show_voxel_with_prob
+from utils import depth as du
 import home_robot.utils.pose as pu
 import home_robot.utils.rotation as ru
 from mapping.semantic.constants import MapConstants as MC
@@ -27,7 +26,11 @@ from utils.visualization import (
     draw_top_down_map, 
     Recording, 
     visualize_gt,
+    render_plt_image,
     visualize_pred,
+    show_points, 
+    show_voxel_with_prob, 
+    show_voxel_with_logit,
     save_img_tensor)
 
 

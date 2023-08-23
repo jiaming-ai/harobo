@@ -10,7 +10,6 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 import random
 
-from agent.obj_nav_ura.urp.points_utils import show_points,show_points_with_prob, show_points_with_logit, show_voxel_dataset
 from utils.visualization import (
     display_grayscale,
     display_rgb,
@@ -21,6 +20,7 @@ from utils.visualization import (
     Recording, 
     visualize_gt,
     visualize_pred,
+    show_voxel_with_prob,
     save_img_tensor)
 
 import os
@@ -43,8 +43,8 @@ def vis(voxel,pred,gt):
 
     images = [c_map,i_map,gt[0,0],gt[0,1]]
     plot_multiple_images(images,2)
-
-    show_voxel_dataset(voxel)
+    voxel[voxel==-1] = torch.inf
+    show_voxel_with_prob(voxel)
 
 
 def train_epoch(net,dataloader,optimizer,epoch,logger):
@@ -74,7 +74,7 @@ def eval_epoch(net,dataloader):
         voxel, info_map = batch
         pred = net(voxel)
         if DEBUG:
-            if (info_map[0,1] > 1).sum() > 20:
+            if (info_map[0,1] > 1).sum() > 0:
                 vis(voxel,pred,info_map)
         loss = net.loss(pred,info_map)
         all_loss.append(loss.item())
@@ -97,11 +97,11 @@ def init_seed(seed):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/igp/default_config.yaml")
-    parser.add_argument("--gpu_id", type=int, default=0)
+    parser.add_argument("--gpu_id", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--exp_name", type=str, default="unet_c16_is10")
+    parser.add_argument("--exp_name", type=str, default="unet_c16_lossis1_dlis10_more")
     parser.add_argument("--eval_only", action="store_true",default=False)
-    parser.add_argument("--options", type=str,default='net.c0=8,net.backbone=resnet,net.resnet_depth=4') # "net.c0=8,..."
+    parser.add_argument("--options", type=str,default='') # "net.c0=8,..."
     
     args = parser.parse_args()
     extra_args = OmegaConf.from_dotlist(args.options.split(","))

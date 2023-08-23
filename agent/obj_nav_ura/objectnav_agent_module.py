@@ -1,33 +1,14 @@
 # Adapted from https://github.com/facebookresearch/home-robot
 
-import time
-
 import torch.nn as nn
-
 from mapping.semantic.categorical_2d_semantic_map_module import (
     Categorical2DSemanticMapModule,
 )
-
-from .ur_policy import ObjectNavFrontierExplorationPolicy
-
-from pytorch3d.structures import Pointclouds
-from pytorch3d.vis.plotly_vis import AxisArgs, plot_batch_individually, plot_scene
-from pytorch3d.renderer import (
-    look_at_view_transform,
-    FoVOrthographicCameras, 
-    PointsRasterizationSettings,
-    PointsRenderer,
-    PulsarPointsRenderer,
-    PointsRasterizer,
-    AlphaCompositor,
-    NormWeightedCompositor
-)
+from .fbe_policy import ObjectNavFrontierExplorationPolicy
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from pytorch3d.ops import sample_farthest_points
-from utils.geometry.urp_dr import DRPlanner
 from utils.visualization import (
     display_grayscale,
     display_rgb,
@@ -38,13 +19,9 @@ from utils.visualization import (
     visualize_gt,
     visualize_pred,
     save_img_tensor)
-import trimesh.transformations as tra
-
-
 
 # Do we need to visualize the frontier as we explore?
 debug_frontier_map = False
-
 
 class ObjectNavAgentModule(nn.Module):
     def __init__(self, config):

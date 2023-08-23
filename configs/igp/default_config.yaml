@@ -11,13 +11,13 @@ dataloader:
   random_rotate: True
   crop_size: 384
   filter_height: True
-  i_s_weight: 10
+  i_s_weight: 5 # scaling the weight of i_s
 
 net:
   backbone: "unet"
   c0: 16
   loss: 'l1'
-  i_s_weight: 10
+  i_s_weight: 1 # scaling the loss of i_s
   
 
 train:
