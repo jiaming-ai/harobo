@@ -343,6 +343,7 @@ class ObjectNavAgent(Agent):
             # we just need to transform the high goal to account for the robot's movement
             else:
                 goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._ur_global_goal_pose[e])
+                self._ur_local_goal_coords[e] = goal_coords
                 goal_map = self._get_goal_map(goal_coords)
                 self.semantic_map.update_global_goal_for_env(e, goal_map)
                 
