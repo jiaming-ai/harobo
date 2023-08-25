@@ -556,6 +556,12 @@ class ObjectNavAgent(Agent):
                 timestep=self.timesteps[0],
                 debug=self.verbose,
             )
+        # if we are moving towards ur goal, we should not call STOP
+        if self._state[0] == 0 and action == DiscreteNavigationAction.STOP:
+            # change to look around, and start turning
+            self._state[0] = 1 # look around
+            self._look_around_steps[0] += 1
+            action = ContinuousNavigationAction(np.array([0.,0.,self.turn_angle_rad]))
 
         # # test rl planner
         # depth = torch.from_numpy(obs.depth).unsqueeze(0)
@@ -808,7 +814,7 @@ class ObjectNavAgent(Agent):
         obstacle = self.semantic_map.get_dialated_obstacle_map_global(e,self.ur_obstacle_dialate_radius) # [M x M]
         pred[obstacle.repeat(2,1,1)] = 0
         
-        pred_ig = pred[0] + self.info_gain_alpha * pred[1] / 5
+        pred_ig = pred[0] + self.info_gain_alpha * pred[1] / self.ig_predictor.i_s_weight
         # info_at_locs = pred_ig[global_exp_pos_map_frame[:,0], global_exp_pos_map_frame[:,1]] # [N_locs]
 
         # info_sorted, idx = torch.sort(info_at_locs, descending=True)
@@ -996,24 +1002,7 @@ class ObjectNavAgent(Agent):
         local_exp_pos_map_frame_sorted = local_exp_pos_map_frame.clone()
         exp_pos_sorted = exp_pos[idx]
 
-        if self.save_info_gain_data:
-            if '_last_save_num_explored_grids' not in self.__dict__:
-                # assume single env
-                self._last_save_num_explored_grids = 0
-
-            num_exp_grid = self.semantic_map.get_num_explored_cells(e)
-            num_changed_cells = abs(num_exp_grid - self._last_save_num_explored_grids)
-            # we only save the data if the number of changed cells is larger than 100
-            # this is to avoid saving same data
-            if num_changed_cells > 100:
-                self._last_save_num_explored_grids = num_exp_grid
-                global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos).cpu()
-                point_idx = self.semantic_map.get_global_pointcloud_flat_idx(e).squeeze(-1).cpu().to(torch.int32)
-                p = feats[0].squeeze(-1).cpu().to(torch.float16) # save space
-                c_s, i_s = result['raw_c_s'].cpu(), result['raw_i_s'].cpu() # [N_locs * len(theta_list))]
-                theta_tensor = torch.tensor(result['theta_list'])
-                torch.save([point_idx, p, global_exp_pos_map_frame, c_s,i_s,theta_tensor],
-                        self.save_info_gain_data_dir+f'/{self.timesteps[0]}.pt')
+      
 
         if debug_info_gain:
         ##################### visualize using global map

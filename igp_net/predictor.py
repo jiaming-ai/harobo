@@ -36,6 +36,7 @@ class IGPredictor():
 
         self.net = net
         self.data_config = config.dataloader
+        self.i_s_weight = config.dataloader.i_s_weight
 
     def _process_voxel(self,voxel):
 

@@ -183,7 +183,7 @@ AGENT:
 
   PLANNER:
     collision_threshold: 0.20       # forward move distance under which we consider there's a collision (in meters)
-    obs_dilation_selem_radius: 1 # default: 3    # radius (in cells) of obstacle dilation structuring element
+    obs_dilation_selem_radius: 1    # radius (in cells) of obstacle dilation structuring element
     goal_dilation_selem_radius: 10  # radius (in cells) of goal dilation structuring element
     step_size: 5                    # maximum distance of the short-term goal selected by the planner
     use_dilation_for_stg: False
@@ -201,10 +201,10 @@ AGENT:
     goal_update_steps: 150 # controls how often to update the ur goal 
     max_num_changed_cells: 4000 # controls how often to update the ur goal based on the change in the map
     max_num_changed_promising_cells: 1000 # controls how often to update the ur goal based on the change in the map
-    info_gain_alpha: 3 # controls how much to weight the promising area in information gain computation
+    info_gain_alpha: 10 # controls how much to weight the promising area in information gain computation
     ur_obstacle_dialate_radius: 7 # dialate the obstacles when selecting the ur goal so that the robot doesn't get too close to the obstacles
     ur_dist_obstacle_dialate_radius: 3 # dialate the obstacles when computing the distance to the ur goals
-    igp_model_dir: "data/checkpoints/igp/unet_c16_is10_dlis10_more"
+    igp_model_dir: "data/checkpoints/igp/unet_c16_lossis1_dlis5_more"
     util_lambda: 0.01 # controls how much to prioritize the ur goal close to the robot
     random_ur_goal: False # whether to use a random ur goal or not
     use_ig_predictor: True # whether to use the information gain predictor or not

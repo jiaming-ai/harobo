@@ -31,16 +31,22 @@
 #                         --exp_name ur_detic_igp --eval_policy ur --gpu_id 1
 
 trap 'kill 0' SIGINT
-exp_name=("0.01" "0.05")
+# exp_name=(True False)
+# # exp true will be same para, but different model with igp_map_dialate_3 (default)
+# for exn in "${exp_name[@]}"
+# do
+#     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name igp_util_exp_$exn --save_video \
+#                         --eval_policy ur --gpu_id 1 +AGENT.IG_PLANNER.utility_exp=$exn &
+# done
 
+exp_name=("unet_c16_lossis1_dlis1_more" "unet_c16_lossis1_dlis2_more" "unet_c16_is10_dlis10_more")
 for exn in "${exp_name[@]}"
 do
     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name igp_util_$exn --save_video \
-                        --eval_policy ur --gpu_id 1 +AGENT.IG_PLANNER.util_lambda=$exn &
+                        --exp_name igp_model_$exn --save_video \
+                        --eval_policy ur --gpu_id 1 +AGENT.IG_PLANNER.igp_model_dir=data/checkpoints/igp/$exn &
 done
-
-
 
 # exp_name=(3 2)
 

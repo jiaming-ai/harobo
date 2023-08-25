@@ -63,7 +63,7 @@ def summarize_result():
                     
             
             if total_count > 0:
-                spl /= success_count
+                spl /= total_count
                 success_rate = success_count/total_count
                 print(f'EXP: {exp_name} Success rate: {success_count}/{total_count} = {success_count/total_count:.2%}')
                 print(f'EXP: {exp_name} SPL: {spl}')
@@ -91,7 +91,7 @@ def plot(results,item):
     plt.show()
     
 # plot(results,'exp_coverage')
-plot(results,'close_coverage')
-plot(results,'check_coverage')
-plot(results,'entropy')
+# plot(results,'close_coverage')
+# plot(results,'check_coverage')
+# plot(results,'entropy')
     

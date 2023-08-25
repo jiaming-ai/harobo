@@ -4,7 +4,7 @@ trap 'kill 0' SIGINT
 
 # python eval_agent.py --save_video --no_render --no_interactive --eval_eps_total_num 200 \
 #                         --exp_name ur_detic --eval_policy ur --gpu_id 2
-exp_name=(9 11)
+exp_name=(13 15)
 
 for exn in "${exp_name[@]}"
 do

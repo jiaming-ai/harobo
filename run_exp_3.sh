@@ -5,23 +5,23 @@ trap 'kill 0' SIGINT
 # python eval_agent.py --save_video --no_render --no_interactive --eval_eps_total_num 200 \
 #                         --exp_name ur_detic --eval_policy ur --gpu_id 2
 
-exp_name=(5 3)
-
-for exn in "${exp_name[@]}"
-do
-    python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name igp_dist_obdiasize_$exn --save_video \
-                        --eval_policy ur --gpu_id 3 +AGENT.IG_PLANNER.ur_dist_obstacle_dialate_radius=$exn &
-done
-
-# exp_name=(150 200)
+# exp_name=(5 3)
 
 # for exn in "${exp_name[@]}"
 # do
 #     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-#                         --exp_name igp_close_range_$exn --save_video \
-#                         --eval_policy ur --gpu_id 0 AGENT.SEMANTIC_MAP.close_range=$exn &
+#                         --exp_name igp_dist_obdiasize_$exn --save_video \
+#                         --eval_policy ur --gpu_id 3 +AGENT.IG_PLANNER.ur_dist_obstacle_dialate_radius=$exn &
 # done
+
+exp_name=(150 200)
+
+for exn in "${exp_name[@]}"
+do
+    python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+                        --exp_name igp_close_range_$exn --save_video \
+                        --eval_policy ur --gpu_id 3 AGENT.SEMANTIC_MAP.close_range=$exn &
+done
 
 wait
 # map_dilate_size=(1 2 3 4)
