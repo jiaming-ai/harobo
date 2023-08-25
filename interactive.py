@@ -171,7 +171,8 @@ class InteractiveEvaluator():
     def eval(self, num_episodes_per_env=10):
      
         self.env = create_ovmm_env_fn(self.config,self.args)
-        visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
+        # visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
+        visualize = True # make sure to print the metrics
         print(f'Env created')
         agent = OVMMAgent(
             config=self.config,
@@ -467,13 +468,13 @@ if __name__ == "__main__":
         "--no_interactive",
         action="store_true",
         help="Whether to render the environment or not",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[86],
+        default=None,
     )
     parser.add_argument(
         "--eval_eps_total_num",
@@ -518,7 +519,7 @@ if __name__ == "__main__":
         "--gt_semantic",
         help="whether to use ground truth semantic map",
         action="store_true",
-        default=True,    
+        default=False,    
     )
     parser.add_argument(
         "--no_use_prob_map",
