@@ -50,7 +50,6 @@ from utils.visualization import (
     save_img_tensor)
 import torch
 import random
-
 # NON_SCALAR_METRICS = {"top_down_map", "collisions.is_collision"}
 # METRICS = ['OVMMDistToPickGoal', # distance to pick goal
 #            'ovmm_nav_to_pick_succ' # success of navigation to pick goal
@@ -244,7 +243,7 @@ class InteractiveEvaluator():
         ob = env.reset()
         # update_detic_perception_vocab(ob, detic_perception)
 
-        visualizer = Visualizer(self.config,self.env._dataset)
+        visualizer = Visualizer(self.config,self.env._dataset,self.args)
         visualizer.reset()
         agent.reset_vectorized([self.env.current_episode()])
         agent_info = None
@@ -262,6 +261,12 @@ class InteractiveEvaluator():
         recorder = Recording()
         result_dir = f'datadump/exp_results/{self.args.exp_name}/'
         os.makedirs(result_dir, exist_ok=True)
+        tested_episodes = []       
+        for f in os.listdir(result_dir):
+            if f.endswith('.json'):
+                r = json.load(open(os.path.join(result_dir,f),'r'))
+                tested_episodes.append(r['episode_id'])
+
         util_img = np.zeros((640,640,3),dtype=np.uint8)
 
         want_terminate = False
@@ -274,15 +279,25 @@ class InteractiveEvaluator():
         eps_step = 0
         pre_pose = np.zeros(2)
         total_dist = 0
-        
+        total_time = 0
         while ep_idx < env.number_of_episodes:
+
+            if self.args.skip_existing:
+                current_episodes_id = self.env.current_episode().episode_id
+                if current_episodes_id in tested_episodes:
+                    print(f'Skip existing episode: {current_episodes_id}')
+                    ob = env.reset()
+                    continue
+
             eps_step += 1
             
-            print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
+            # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
+            start_time = time.time()
             action, agent_info, _ = agent.act(ob)
+            total_time += time.time() - start_time
             # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
             # pre_entropy = agent_info["entropy"]
-            print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
+            # print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
 
             exp_coverage_list.append(agent_info["exp_coverage"])
             checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
@@ -298,8 +313,15 @@ class InteractiveEvaluator():
 
                 #  visualize detected instances
                 if 'semantic_frame' in ob.task_observations:
-                    draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
-                    draw_ob[:640,80:560,:] = ob.task_observations['semantic_frame']
+                    # draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
+                    rgb_ob = ob.task_observations['semantic_frame']
+                    rgb_ob = cv2.resize(
+                        rgb_ob,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    draw_ob = rgb_ob
+                    # draw_ob[:640,80:560,:] = ob.task_observations['semantic_frame']
                 
                 
                 # visualize semantic map
@@ -310,7 +332,8 @@ class InteractiveEvaluator():
                     (640, 640),
                     interpolation=cv2.INTER_NEAREST,
                 )
-                draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
+                # draw_ob[:,640:1280,:] = semantic_map_vis[:,:,:3]
+                draw_ob = np.concatenate([draw_ob, semantic_map_vis[:,:,:3]], axis=1)
 
                 # visualize probabilistic map
                 if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
@@ -325,9 +348,8 @@ class InteractiveEvaluator():
                     prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
                     draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
                 
-                # visualize info_gain map
-                
-                if "ig_vis" in agent_info:
+                # visualize info_gain map for ur policy only
+                if self.args.eval_policy == 'ur':
                     ig_vis = agent_info['ig_vis']
                     if ig_vis is not None:
                         util_img = ig_vis['utility']
@@ -337,9 +359,7 @@ class InteractiveEvaluator():
                             interpolation=cv2.INTER_NEAREST,
                         )
                         util_img = np.flipud(util_img)
-                    draw_ob[:,640:1280,:] = util_img[:,:,:3]
-
-                    # draw
+                    draw_ob = np.concatenate([draw_ob, util_img[:,:,:3]], axis=1)
 
             if self.args.save_video:
                 recorder.add_frame(draw_ob)
@@ -354,7 +374,9 @@ class InteractiveEvaluator():
                     agent.force_update_high_goal(0)
                 action = user_action['action']
 
+           
             outputs = env.apply_action(action, agent_info)
+       
             ob, done, info = outputs
 
             if agent_info["skill_done"] != '':
@@ -386,6 +408,7 @@ class InteractiveEvaluator():
                     'checking_area': checking_area_list,
                     'entropy': entropy_list,
                     'close_coverage': close_coverage_list,
+                    'total_time': total_time,
                 }
                 results.append(eps_result)
                 fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
@@ -413,6 +436,8 @@ class InteractiveEvaluator():
                 eps_step = 0
                 total_dist = 0
                 pre_pose = np.zeros(2)
+                total_time = 0
+                util_img = np.zeros((640,640,3),dtype=np.uint8)
 
                 print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')
@@ -515,6 +540,18 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--skip_existing",
+        help="whether to skip existing results",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--allow_sliding",
+        help="whether to allow sliding",
+        action="store_true",
+        default=False,
+    )
     
     print("Arguments:")
     args = parser.parse_args()
@@ -529,6 +566,7 @@ if __name__ == "__main__":
     baseline_config = OmegaConf.load(args.baseline_config_path)
     extra_config = OmegaConf.from_cli(args.opts)
     baseline_config = OmegaConf.merge(baseline_config, extra_config)
+    print(OmegaConf.to_yaml(baseline_config))
     config = DictConfig({**config, **baseline_config})
     evaluator = InteractiveEvaluator(config,args.gpu_id,args=args)
     print("-" * 100)
@@ -549,7 +587,7 @@ if __name__ == "__main__":
     else:
         raise ValueError(f'Unknown policy type: {args.eval_policy}')
     config.GROUND_TRUTH_SEMANTICS = 1 if args.gt_semantic else 0
-
+    config.habitat.simulator.habitat_sim_v0.allow_sliding=args.allow_sliding
     # if args.eval_policy == 'ur' and not args.no_use_prob_map and not args.gt_semantic:
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = True
     # else:

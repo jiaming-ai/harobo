@@ -2,3 +2,4 @@ data
 datadump
 video*
 __pycache__
+*.sh

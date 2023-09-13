@@ -1,6 +1,7 @@
 # Adapted from https://github.com/facebookresearch/home-robot
 
 from typing import Any, Dict, List, Tuple
+from collections import deque
 from datetime import datetime
 import os
 import numpy as np
@@ -12,7 +13,6 @@ from home_robot.core.interfaces import DiscreteNavigationAction, Observations, C
 from mapping.semantic.categorical_2d_semantic_map_state import (
     Categorical2DSemanticMapState,
 )
-from navigation_planner.discrete_planner import DiscretePlanner
 import trimesh.transformations as tra
 from .objectnav_agent_module import ObjectNavAgentModule
 import numpy as np
@@ -43,7 +43,6 @@ from .ig_2d_ray_casting.ray_casting import IGRayCasting
 # For visualizing exploration issues
 debug_frontier_map = False
 debug_info_gain = False
-
 class ObjectNavAgent(Agent):
     """Simple object nav agent based on a 2D semantic map"""
 
@@ -85,6 +84,12 @@ class ObjectNavAgent(Agent):
         agent_cell_radius = int(
             np.ceil(agent_radius_cm / config.AGENT.SEMANTIC_MAP.map_resolution)
         )
+        self.use_FBE_policy = kwargs.get('use_FBE_policy',False) or kwargs.get('eval_rl_nav',False) # for evaluation
+        if self.use_FBE_policy: 
+            from navigation_planner.discrete_planner_fbe import DiscretePlanner
+        else:
+            from navigation_planner.discrete_planner import DiscretePlanner
+            
         self.planner = DiscretePlanner(
             turn_angle=config.ENVIRONMENT.turn_angle,
             collision_threshold=config.AGENT.PLANNER.collision_threshold,
@@ -143,7 +148,7 @@ class ObjectNavAgent(Agent):
         """
         self._state = np.ones(self.num_environments) # start with look around
         self._ur_goal_dist = np.zeros(self.num_environments)
-        self._ur_global_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
+        self._global_hgoal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
         self._ur_local_goal_coords = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device) # (num_envs, num_goals, 2)
         self._force_goal_update_once = np.full(self.num_environments, False)
         self._look_around_steps = np.zeros(self.num_environments)
@@ -151,11 +156,9 @@ class ObjectNavAgent(Agent):
         self._num_promising_grids = np.zeros(self.num_environments)
 
         self.save_info_gain_data = kwargs.get('collect_data',False) # for training
-        self.use_FBE_policy = kwargs.get('use_FBE_policy',False) or kwargs.get('eval_rl_nav',False) # for evaluation
 
         # self.pn_agent = PNAgent(self.device)
         self.ig_renderer = None
-        self.ig_ray_casting = IGRayCasting(config,device=self.device)
 
         self.use_ig_predictor = config.AGENT.IG_PLANNER.use_ig_predictor
         self.other_ig_type = config.AGENT.IG_PLANNER.other_ig_type
@@ -166,6 +169,14 @@ class ObjectNavAgent(Agent):
         else:
             self.max_render_loc = 150
             self.uniform_sampling = True
+            if self.other_ig_type == 'ray_casting':
+                self.ig_ray_casting = IGRayCasting(config,device=self.device)
+
+        #### stuck detection ####
+        self.pre_action_deque_len = 6
+        self.replan_ur_goal_if_stuck = config.AGENT.IG_PLANNER.replan_ur_goal_if_stuck
+        self._pre_actions_taken = [deque(maxlen=self.pre_action_deque_len) for _ in range(self.num_environments)]
+        self._pre_pose = [deque(maxlen=self.pre_action_deque_len) for _ in range(self.num_environments)]
 
     def force_update_high_goal(self,e):
         self._force_goal_update_once[e] = True
@@ -297,12 +308,19 @@ class ObjectNavAgent(Agent):
         found_goal = found_goal.squeeze(1).cpu()
 
         ig_vis_list = [None for e in range(self.num_environments)]
-     
+        
         for e in range(self.num_environments):
             self.semantic_map.update_frontier_map(e, frontier_map[e][0].cpu().numpy())
             # find object goal
             if found_goal[e] or self.use_FBE_policy:
                 self.semantic_map.update_global_goal_for_env(e, goal_map[e])
+                # calculate the global goal pose
+                xs, ys = goal_map[e].nonzero()
+                x1, x2, y1, y2 = xs.min(), xs.max(), ys.min(), ys.max()
+                xc, yc = (x1 + x2) // 2, (y1 + y2) // 2
+                pos = torch.tensor([xc, yc], device=self.device).unsqueeze(0)
+                self._global_hgoal_pose[e] = self.semantic_map.local_map_coords_to_hab_world_frame(e, pos)
+
                 self._state[e] = 2 # go to object goal
             # if not find object goal and need to update high goal
             elif self._check_n_update_need_replan_ur_goal(e):
@@ -311,11 +329,11 @@ class ObjectNavAgent(Agent):
                     utility_map,local_goal_coords,dist = self._select_goal_igp(e, pred_ig)
                     self._ur_goal_dist[e] = dist
                     self._ur_local_goal_coords[e] = local_goal_coords
-                    self._ur_global_goal_pose[e] = self.semantic_map.local_map_coords_to_hab_world_frame(e, local_goal_coords)
+                    self._global_hgoal_pose[e] = self.semantic_map.local_map_coords_to_hab_world_frame(e, local_goal_coords)
                     goal_map_e = self._get_goal_map(local_goal_coords)
-                    
-                    ig_vis['utility'] = render_plt_image(utility_map)
-                    ig_vis_list[e] = ig_vis
+                    if self.visualize:
+                        ig_vis['utility'] = render_plt_image(utility_map)
+                        ig_vis_list[e] = ig_vis
                 else:
                     import time
                     start = time.time()
@@ -328,7 +346,7 @@ class ObjectNavAgent(Agent):
                         continue
                     dist_map = self._get_dist_map(e)
                     selected_goal_coords, selected_info, selected_idx = self._select_goal(dist_map,info,local_goal_coords)
-                    self._ur_global_goal_pose[e] = global_pose[selected_idx] # selected global pos
+                    self._global_hgoal_pose[e] = global_pose[selected_idx] # selected global pos
                     self._ur_local_goal_coords[e] = local_goal_coords[selected_idx] # selected local pos
                     print("time to get info map: ", time.time() - start)
 
@@ -342,7 +360,7 @@ class ObjectNavAgent(Agent):
             # not find obj and no need to update high goal
             # we just need to transform the high goal to account for the robot's movement
             else:
-                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._ur_global_goal_pose[e])
+                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
                 self._ur_local_goal_coords[e] = goal_coords
                 goal_map = self._get_goal_map(goal_coords)
                 self.semantic_map.update_global_goal_for_env(e, goal_map)
@@ -384,6 +402,7 @@ class ObjectNavAgent(Agent):
                 "frontier_map": self.semantic_map.get_frontier_map(e),
                 "sensor_pose": self.semantic_map.get_planner_pose_inputs(e),
                 "found_goal": found_goal[e].item(),
+                "global_goal_pose": self._global_hgoal_pose[e].cpu().numpy(),
             }
             for e in range(self.num_environments)
         ]
@@ -396,14 +415,21 @@ class ObjectNavAgent(Agent):
                     "been_close_map": self.semantic_map.get_been_close_map(e),
                     "timestep": self.timesteps[e],
                     "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
+                    "ig_vis": ig_vis_list[e],
                 }
                 for e in range(self.num_environments)
             ]
-            if self.use_ig_predictor:
-                for e in range(self.num_environments):
-                    vis_inputs[e]["ig_vis"] = ig_vis_list[e]
+            # if self.use_ig_predictor:
+            #     for e in range(self.num_environments):
+            #         vis_inputs[e]["ig_vis"] = ig_vis_list[e]
         else:
-            vis_inputs = [{} for e in range(self.num_environments)]
+            vis_inputs = [
+                {
+                    "timestep": self.timesteps[e],
+                    "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
+                }
+                for e in range(self.num_environments)
+            ]
 
         return planner_inputs, vis_inputs
 
@@ -419,13 +445,15 @@ class ObjectNavAgent(Agent):
         self._state = np.ones(self.num_environments)
         self._ur_goal_dist = np.zeros(self.num_environments)
         self._force_goal_update_once = np.full(self.num_environments, False)
-        self._ur_global_goal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device)
+        self._global_hgoal_pose = torch.zeros((self.num_environments,self.num_high_goals, 2), device=self.device)
         self._ur_local_goal_coords = torch.zeros((self.num_environments,self.num_high_goals, 2), 
                                                  dtype=torch.long,
                                                  device=self.device)
         self._look_around_steps = np.zeros(self.num_environments)
         self._num_explored_grids = np.zeros(self.num_environments)
         self._num_promising_grids = np.zeros(self.num_environments)
+        self._pre_actions_taken = [deque(maxlen=self.pre_action_deque_len) for _ in range(self.num_environments)]
+        self._pre_pose = [deque(maxlen=self.pre_action_deque_len) for _ in range(self.num_environments)]
 
         if self.save_info_gain_data:
             if episodes is None: 
@@ -451,11 +479,13 @@ class ObjectNavAgent(Agent):
         self._state[e] = 1
         self._ur_goal_dist[e] = 0
         self._force_goal_update_once[e] = False
-        self._ur_global_goal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
+        self._global_hgoal_pose[e] = torch.zeros((self.num_high_goals, 2), device=self.device)
         self._ur_local_goal_coords[e] = torch.zeros((self.num_high_goals, 2), device=self.device).long()
         self._look_around_steps[e] = 0
         self._num_explored_grids[e] = 0
         self._num_promising_grids[e] = 0
+        self._pre_actions_taken[e] = deque(maxlen=self.total_look_around_steps * 2)
+        self._pre_pose[e] = deque(maxlen=self.total_look_around_steps * 2)
 
         if self.save_info_gain_data:
             if episode is None:
@@ -488,7 +518,6 @@ class ObjectNavAgent(Agent):
             self.init_ig_renderer(obs)
 
         # t0 = time.time()
-
         # 1 - Obs preprocessing
         (
             obs_preprocessed,
@@ -526,7 +555,7 @@ class ObjectNavAgent(Agent):
         dilated_obstacle_map = None
         # if planner_inputs[0]["found_goal"]:
         #     self.episode_panorama_start_steps = 0
-     
+
         if self.timesteps[0] > self.max_steps:
             action = DiscreteNavigationAction.STOP
         
@@ -545,7 +574,9 @@ class ObjectNavAgent(Agent):
                 self.timesteps_before_goal_update[0] = 0 # relan for the next ur goal
         
         # state is 0 or 2: go to point goal
+        
         else:
+            
             (
                 action,
                 closest_goal_map,
@@ -557,12 +588,18 @@ class ObjectNavAgent(Agent):
                 timestep=self.timesteps[0],
                 debug=self.verbose,
             )
+            
+
         # if we are moving towards ur goal, we should not call STOP
         if self._state[0] == 0 and action == DiscreteNavigationAction.STOP:
             # change to look around, and start turning
             self._state[0] = 1 # look around
             self._look_around_steps[0] += 1
             action = ContinuousNavigationAction(np.array([0.,0.,self.turn_angle_rad]))
+
+        act_idx = action.value if isinstance(action, DiscreteNavigationAction) else -1
+        self._pre_actions_taken[0].append(act_idx)
+        self._pre_pose[0].append(obs.gps)
 
         # # test rl planner
         # depth = torch.from_numpy(obs.depth).unsqueeze(0)
@@ -576,6 +613,8 @@ class ObjectNavAgent(Agent):
         # print()
 
         vis_inputs[0]["goal_name"] = obs.task_observations["goal_name"]
+        vis_inputs[0]["exp_coverage"] = self.semantic_map.get_exp_coverage_area(0)
+        vis_inputs[0]["close_coverage"] = self.semantic_map.get_close_coverage_area(0)
 
         if self.visualize:
             vis_inputs[0]["semantic_frame"] = obs.task_observations["semantic_frame"]
@@ -584,11 +623,11 @@ class ObjectNavAgent(Agent):
             vis_inputs[0]["short_term_goal"] = None
             vis_inputs[0]["dilated_obstacle_map"] = dilated_obstacle_map
             vis_inputs[0]["probabilistic_map"] = self.semantic_map.get_probability_map(0)
-            vis_inputs[0]["exp_coverage"] = self.semantic_map.get_exp_coverage_area(0)
-            vis_inputs[0]["close_coverage"] = self.semantic_map.get_close_coverage_area(0)
 
         info = {**planner_inputs[0], **vis_inputs[0]}
         info["entropy"] = self.semantic_map.get_probability_map_entropy(0)
+
+        
         return action, info
 
     #####################################################################
@@ -709,6 +748,7 @@ class ObjectNavAgent(Agent):
             3. if the distance to selected goal changed too much, because of newly 
             observed obstacles. (so better to explore nearby first?)
             4. if force_update or timesteps_before_goal_update is reached, or we have traveled too far
+            5. if the agent is stuck
         
         """
         # no need to replan if we are looking around
@@ -716,6 +756,11 @@ class ObjectNavAgent(Agent):
             return False
         
         replan = False
+
+        # case 5
+        if self._check_is_stuck(e):
+            replan = True
+
         # case 4
         if self.timesteps_before_goal_update[e] == 0 or self._force_goal_update_once[e]:
             replan = True
@@ -731,7 +776,7 @@ class ObjectNavAgent(Agent):
             replan = True
         
         # case 1, 3
-        goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._ur_global_goal_pose[e])
+        goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
         dist_map = self._get_dist_map(e)
         goal_dist = dist_map[goal_coords[0,0],goal_coords[0,1]].item() # we only consider the first goal
         
@@ -810,9 +855,15 @@ class ObjectNavAgent(Agent):
         # global_exp_pos_map_frame = self.semantic_map.hab_world_to_map_global_frame(e, exp_pos)
 
         voxel = self.semantic_map.get_global_voxel(e)
+        if not self.use_probability_map:
+            voxel[~voxel.isinf()] = -13 # mark all occupaid as 0 prob
         pred = self.ig_predictor.predict(voxel)
         # obstacle = self.semantic_map.global_map[e,0] > 0 # [M x M]
         obstacle = self.semantic_map.get_dialated_obstacle_map_global(e,self.ur_obstacle_dialate_radius) # [M x M]
+        
+        # we add obstacles from collision map
+        collision_map = torch.from_numpy(self.planner.collision_map).to(self.device)
+        obstacle = torch.logical_or(obstacle, collision_map)
         pred[obstacle.repeat(2,1,1)] = 0
         
         pred_ig = pred[0] + self.info_gain_alpha * pred[1] / self.ig_predictor.i_s_weight
@@ -1044,7 +1095,28 @@ class ObjectNavAgent(Agent):
 
         return local_exp_pos_map_frame_sorted, exp_pos_sorted, info_sorted
     
+    def _check_is_stuck(self,e:int) -> bool:
+        """
+        Heuristic to check if the agent is stuck:
+            1. if the agent is not moving: havn't taken MOVE_FORWARD action for more than 2 x turn steps
+            2. if the agent is moving but not making progress: MOVE_FORWARD action is taken for N steps but the agent
+                is still in the same grid
+        """
+        # go to object goal
+        if self._state[e] == 2:
+            return False
+        
+        # if total steps is not enough, don't check
+        if len(self._pre_actions_taken[e]) < self.pre_action_deque_len:
+            return False
+        # if the agent is not moving for n consecutive steps        
+        if np.all(np.array(self._pre_actions_taken[e]) == DiscreteNavigationAction.MOVE_FORWARD.value) \
+            and np.all(self._pre_pose[e][-1] == self._pre_pose[e][0]):
+            return True
 
+        
+        return False
+    
     def _preprocess_obs(self, obs: Observations):
         """Take a home-robot observation, preprocess it to put it into the correct format for the
         semantic map.
@@ -1071,14 +1143,15 @@ class ObjectNavAgent(Agent):
         obs_preprocessed = obs_preprocessed.permute(0, 3, 1, 2)
 
         detection_results = None
-        if self.use_probability_map:
-            relevance = torch.zeros(obs.task_observations['semantic_max_val']+1).to(self.device)
-            relevance[obs.task_observations['object_goal']] = 1
-            relevance[obs.task_observations['start_recep_goal']] = 0.7
-            detection_results = {'scores':torch.tensor(obs.task_observations['instance_scores']).unsqueeze(0),
-                                 'classes':torch.tensor(obs.task_observations['instance_classes']).unsqueeze(0),
-                                 'masks':torch.tensor(obs.task_observations['masks']).unsqueeze(0),
-                                 'relevance':relevance}
+        # if self.use_probability_map:
+        # we always update the prob map for evaluation
+        relevance = torch.zeros(obs.task_observations['semantic_max_val']+1).to(self.device)
+        relevance[obs.task_observations['object_goal']] = 1
+        relevance[obs.task_observations['start_recep_goal']] = 0.7
+        detection_results = {'scores':torch.tensor(obs.task_observations['instance_scores']).unsqueeze(0),
+                                'classes':torch.tensor(obs.task_observations['instance_classes']).unsqueeze(0),
+                                'masks':torch.tensor(obs.task_observations['masks']).unsqueeze(0),
+                                'relevance':relevance}
         curr_pose = np.array([obs.gps[0], obs.gps[1], obs.compass[0]])
         pose_delta = torch.tensor(
             pu.get_rel_pose_change(curr_pose, self.last_poses[0])

@@ -21,17 +21,7 @@ from home_robot.core.interfaces import (
 from home_robot.utils.geometry import xyt_global_to_base
 
 from .fmm_planner import FMMPlanner
-from utils.visualization import (
-    display_grayscale,
-    display_rgb,
-    plot_image,
-    save_image, 
-    draw_top_down_map, 
-    Recording, 
-    visualize_gt,
-    render_plt_image,
-    visualize_pred,
-    save_img_tensor)
+
 CM_TO_METERS = 0.01
 
 
@@ -123,7 +113,6 @@ class DiscretePlanner:
         self.curr_obs_dilation_selem_radius = None
         self.obs_dilation_selem = None
         self.min_goal_distance_cm = min_goal_distance_cm
-        self.init_min_goal_distance_cm = min_goal_distance_cm
         self.dd = None
 
         self.map_downsample_factor = map_downsample_factor
@@ -150,9 +139,6 @@ class DiscretePlanner:
             self.goal_dilation_selem_radius
         )
 
-        self.global_goal_pose = None
-        self.min_goal_distance_cm = self.init_min_goal_distance_cm
-
     def set_vis_dir(self, scene_id: str, episode_id: str):
         self.vis_dir = os.path.join(self.default_vis_dir, f"{scene_id}_{episode_id}")
         shutil.rmtree(self.vis_dir, ignore_errors=True)
@@ -171,7 +157,7 @@ class DiscretePlanner:
         debug: bool = True,
         use_dilation_for_stg: bool = False,
         timestep: int = None,
-        global_goal_pose: np.ndarray = None,
+        **kwargs,
     ) -> Tuple[DiscreteNavigationAction, np.ndarray]:
         """Plan a low-level action.
 
@@ -190,16 +176,6 @@ class DiscretePlanner:
         # Reset timestep using argument; useful when there are timesteps where the discrete planner is not invoked
         if timestep is not None:
             self.timestep = timestep
-
-        # Update the global goal pose
-        new_hgoal = False
-
-        if not np.all(global_goal_pose == self.global_goal_pose):
-            new_hgoal = True
-            self.global_goal_pose = global_goal_pose
-
-        if new_hgoal:
-            self.min_goal_distance_cm = self.init_min_goal_distance_cm
 
         self.last_pose = self.curr_pose
         obstacle_map = np.rint(obstacle_map)
@@ -251,7 +227,6 @@ class DiscretePlanner:
                 planning_window,
                 plan_to_dilated_goal=use_dilation_for_stg,
                 frontier_map=frontier_map,
-                is_ur_goal=not found_goal,
             )
         except Exception as e:
             print("Warning! Planner crashed with error:", e)
@@ -281,9 +256,8 @@ class DiscretePlanner:
         # t1 = time.time()
         # print(f"[Planning] get_short_term_goal() time: {t1 - t0}")
 
-        # we only replan if we found goal
-        # but not for ur goal. It possibly means the goal is not traversible, so we should choose a new goal
-        if found_goal and replan and not stop:
+        # We were not able to find a path to the high-level goal
+        if replan and not stop:
             # Clean collision map
             self.collision_map *= 0
             # Reduce obstacle dilation
@@ -297,50 +271,39 @@ class DiscretePlanner:
                         f"reduced obs dilation to {self.curr_obs_dilation_selem_radius}"
                     )
 
-           
-            # (
-            #     short_term_goal,
-            #     closest_goal_map,
-            #     replan,
-            #     stop,
-            #     closest_goal_pt,
-            #     dilated_obstacles,
-            # ) = self._get_short_term_goal(
-            #     obstacle_map,
-            #     frontier_map,
-            #     start,
-            #     planning_window,
-            #     plan_to_dilated_goal=True,
-            # )
-            (
-                short_term_goal,
-                closest_goal_map,
-                replan,
-                stop,
-                closest_goal_pt,
-                dilated_obstacles,
-            ) = self._get_short_term_goal(
-                obstacle_map,
-                np.copy(goal_map),
-                start,
-                planning_window,
-                plan_to_dilated_goal=use_dilation_for_stg,
-                frontier_map=frontier_map,
-                is_ur_goal=not found_goal,
-            )
-            if debug:
-                print("--- after replanning ---")
-                print("goal =", short_term_goal)
-            if replan:
-                print("Nowhere left to explore. Stopping.")
-                # Calling the STOP action here will cause the agent to try grasping
-                #  TODO separate out STOP_SUCCESS and STOP_FAILURE actions
-                return (
-                    DiscreteNavigationAction.STOP,
-                    closest_goal_map,
+            if found_goal:
+                if debug:
+                    print(
+                        "ERROR: Could not find a path to the high-level goal. Trying to explore more..."
+                    )
+                (
                     short_term_goal,
+                    closest_goal_map,
+                    replan,
+                    stop,
+                    closest_goal_pt,
                     dilated_obstacles,
+                ) = self._get_short_term_goal(
+                    obstacle_map,
+                    frontier_map,
+                    start,
+                    planning_window,
+                    plan_to_dilated_goal=True,
                 )
+                if debug:
+                    print("--- after replanning to frontier ---")
+                    print("goal =", short_term_goal)
+                found_goal = False
+                if replan:
+                    print("Nowhere left to explore. Stopping.")
+                    # Calling the STOP action here will cause the agent to try grasping
+                    #  TODO separate out STOP_SUCCESS and STOP_FAILURE actions
+                    return (
+                        DiscreteNavigationAction.STOP,
+                        closest_goal_map,
+                        short_term_goal,
+                        dilated_obstacles,
+                    )
 
         # Normalize agent angle
         angle_agent = pu.normalize_angle(start_o)
@@ -386,20 +349,17 @@ class DiscretePlanner:
             )
             print("-----------------")
 
-        # we don't need to orient to goal
-        if stop:
-            action = DiscreteNavigationAction.STOP
-        else:
-            action = self.get_action(
-                relative_stg_x,
-                relative_stg_y,
-                relative_angle_to_stg,
-                relative_angle_to_closest_goal,
-                start_o,
-                found_goal,
-                stop,
-                debug,
-            )
+        action = self.get_action(
+            relative_stg_x,
+            relative_stg_y,
+            relative_angle_to_stg,
+            relative_angle_to_closest_goal,
+            start_o,
+            found_goal,
+            stop,
+            debug,
+        )
+
         self.last_action = action
         return action, closest_goal_map, short_term_goal, dilated_obstacles
 
@@ -495,7 +455,6 @@ class DiscretePlanner:
         plan_to_dilated_goal=False,
         frontier_map=None,
         visualize=False,
-        is_ur_goal=False,
     ) -> Tuple[Tuple[int, int], np.ndarray, bool, bool]:
         """Get short-term goal.
 
@@ -563,45 +522,31 @@ class DiscretePlanner:
                 traversible, goal_map, start, dilated_goal_map=dilated_goal_map
             )
         else:
-            # we should gradually increase the goal distance, when short term goal is not reachable
-            # (or replan is true)
-            # we only do this for object goal, not for ur goal
-            while self.min_goal_distance_cm <= 100:
-                navigable_goal_map = planner._find_within_distance_to_multi_goal(
-                    goal_map,
-                    self.min_goal_distance_cm / self.map_resolution,
-                    timestep=self.timestep,
-                    vis_dir=self.vis_dir,
-                )
-                # if not np.any(navigable_goal_map):
-                #     frontier_map = add_boundary(frontier_map, value=0)
-                #     navigable_goal_map = frontier_map
-                self.dd = planner.set_multi_goal(
-                    navigable_goal_map,
-                    self.timestep,
-                    self.dd,
-                    self.map_downsample_factor,
-                    self.map_update_frequency,
-                )
-                goal_distance_map, closest_goal_pt = self.get_closest_goal(goal_map, start)
-                
-                state = [start[0] - x1 + 1, start[1] - y1 + 1]
-                # This is where we create the planner to get the trajectory to this state
-                stg_x, stg_y, replan, stop = planner.get_short_term_goal(
-                    state, continuous=(not self.discrete_actions)
-                )
-                if (not is_ur_goal) and replan and (not stop) and self.min_goal_distance_cm < 100:
-                        self.min_goal_distance_cm += 10
-                else:
-                    break
+            navigable_goal_map = planner._find_within_distance_to_multi_goal(
+                goal_map,
+                self.min_goal_distance_cm / self.map_resolution,
+                timestep=self.timestep,
+                vis_dir=self.vis_dir,
+            )
+            if not np.any(navigable_goal_map):
+                frontier_map = add_boundary(frontier_map, value=0)
+                navigable_goal_map = frontier_map
+            self.dd = planner.set_multi_goal(
+                navigable_goal_map,
+                self.timestep,
+                self.dd,
+                self.map_downsample_factor,
+                self.map_update_frequency,
+            )
+            goal_distance_map, closest_goal_pt = self.get_closest_goal(goal_map, start)
 
         self.timestep += 1
 
-        # state = [start[0] - x1 + 1, start[1] - y1 + 1]
-        # # This is where we create the planner to get the trajectory to this state
-        # stg_x, stg_y, replan, stop = planner.get_short_term_goal(
-        #     state, continuous=(not self.discrete_actions)
-        # )
+        state = [start[0] - x1 + 1, start[1] - y1 + 1]
+        # This is where we create the planner to get the trajectory to this state
+        stg_x, stg_y, replan, stop = planner.get_short_term_goal(
+            state, continuous=(not self.discrete_actions)
+        )
         stg_x, stg_y = stg_x + x1 - 1, stg_y + y1 - 1
         short_term_goal = int(stg_x), int(stg_y)
 
@@ -610,7 +555,7 @@ class DiscretePlanner:
             plt.figure(1)
             plt.subplot(131)
             _navigable_goal_map = navigable_goal_map.copy()
-            # _navigable_goal_map[int(stg_y), int(stg_x)] = 1
+            _navigable_goal_map[int(stg_x), int(stg_y)] = 1
             plt.imshow(np.flipud(_navigable_goal_map))
             plt.plot(stg_x, stg_y, "bx")
             plt.plot(start[0], start[1], "rx")

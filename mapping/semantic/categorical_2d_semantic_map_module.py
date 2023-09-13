@@ -429,7 +429,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                 orig=np.zeros(3),
             )
 
-        #################### pointclouds ####################
+        #################### prob features ####################
         
         # xyz = point_cloud_base_coords.clone().reshape(batch_size,-1, 3)
 
@@ -452,7 +452,7 @@ class Categorical2DSemanticMapModule(nn.Module):
                 prob_feat = nn.MaxPool2d(self.du_scale)(prob_feat).view(
                         batch_size, 1,  h // self.du_scale * w // self.du_scale
                     ) # [B, 1,  H*W] after scaling
-        #################### pointclouds ####################
+        #################### prob features ####################
 
         point_cloud_map_coords = du.transform_pose_t(
             point_cloud_base_coords, self.shift_loc, device
@@ -585,7 +585,8 @@ class Categorical2DSemanticMapModule(nn.Module):
         # # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
 
         ########### end PMO ###################
-        prob_map, _ = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
+        # prob_map, _ = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
+        prob_map = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].sum(3)
 
         # TODO: should we use close_range or exp, or just all viewable area?
         # we can use a smaller prior for all viewable area, and bigger prior for close range

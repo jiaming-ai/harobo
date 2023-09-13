@@ -65,11 +65,13 @@ class Visualizer:
     This class is intended to visualize a single object goal navigation task.
     """
 
-    def __init__(self, config, dataset=None):
+    def __init__(self, config, dataset=None,args=None):
         self.show_images = config.VISUALIZE
         self.print_images = config.PRINT_IMAGES
         self.default_vis_dir = f"{config.DUMP_LOCATION}/images/{config.EXP_NAME}"
         self._dataset = dataset
+        self.args = args
+        self.draw_goal = args.eval_policy in ['ur','fbe']
         os.makedirs(self.default_vis_dir, exist_ok=True)
         if hasattr(config, "habitat"):  # hydra configs
             self.episodes_data_path = config.habitat.dataset.data_path
@@ -252,7 +254,8 @@ class Visualizer:
             semantic_category_mapping: contains category id to category mapping and color palette
             rl_obs_frame: variable sized image containing all observations passed to RL (useful for debugging)
         """
-
+        visualize_goal = self.draw_goal
+        
         if semantic_category_mapping is not None:
             self.semantic_category_mapping = semantic_category_mapping
 
@@ -349,14 +352,15 @@ class Visualizer:
             semantic_map_vis = np.flipud(semantic_map_vis)
 
             # overlay the regions the agent has been close to
-            been_close_map = np.flipud(np.rint(been_close_map) == 1)
-            color_index = PI.BEEN_CLOSE * 3
-            color = self.semantic_category_mapping.map_color_palette[
-                color_index : color_index + 3
-            ][::-1]
-            semantic_map_vis[been_close_map] = (
-                semantic_map_vis[been_close_map] + color
-            ) / 2
+            # IGNORED FOR NOW
+            # been_close_map = np.flipud(np.rint(been_close_map) == 1)
+            # color_index = PI.BEEN_CLOSE * 3
+            # color = self.semantic_category_mapping.map_color_palette[
+            #     color_index : color_index + 3
+            # ][::-1]
+            # semantic_map_vis[been_close_map] = (
+            #     semantic_map_vis[been_close_map] + color
+            # ) / 2
 
             semantic_map_vis = cv2.resize(
                 semantic_map_vis,

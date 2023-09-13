@@ -2,7 +2,7 @@
 
 trap 'kill 0' SIGINT
 
-# GPU_ID=0
+GPU_ID=0
 # #############################################
 # # baseline experiments
 # #############################################
@@ -22,16 +22,16 @@ trap 'kill 0' SIGINT
 # # 1. IG by rendering
 # python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
 #                     --exp_name ablation_ig_rendering --save_video \
-#                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.use_ig_predictor=False,AGENT.IG_PLANNER.other_ig_type=rendering &
+#                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.use_ig_predictor=False AGENT.IG_PLANNER.other_ig_type=rendering &
 
 # # 2. IG by ray casting
 # python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-#                     --exp_name ablation_ig_ray_casting --save_video \
-#                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.use_ig_predictor=False,AGENT.IG_PLANNER.other_ig_type=ray_casting &
+#                     --exp_name ablation_ig_ray_casting --skip_existing \
+#                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.use_ig_predictor=False AGENT.IG_PLANNER.other_ig_type=ray_casting &
 
-# # 3. IG with no probability map
+# # # 3. IG with no probability map
 # python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-#                     --exp_name ablation_ig_no_prob --save_video \
+#                     --exp_name ablation_ig_no_prob --skip_existing \
 #                     --eval_policy ur --gpu_id $GPU_ID AGENT.SEMANTIC_MAP.use_probability_map=False &
 # #############################################
 
@@ -40,7 +40,7 @@ trap 'kill 0' SIGINT
 # # Upper bound experiments
 # #############################################
 # # 1. GT semantic perception
-# exp_name=("fbe" "ur" "rl") # add habitat web
+# exp_name=("ur") # add habitat web
 # for exn in "${exp_name[@]}"
 # do
 #     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
@@ -65,13 +65,13 @@ trap 'kill 0' SIGINT
 # #############################################
 # # IGP experiments
 # #############################################
-exp_name=("unet_c16_lossis1_dlis5_more" "unet_c16_lossis1_dlis10_more")
-for exn in "${exp_name[@]}"
-do
-    python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name igp_model_$exn --save_video \
-                        --eval_policy ur --gpu_id 0 +AGENT.IG_PLANNER.igp_model_dir=data/checkpoints/igp/$exn &
-done
+# exp_name=("unet_c16_lossis1_dlis5_more" "unet_c16_lossis1_dlis10_more")
+# for exn in "${exp_name[@]}"
+# do
+#     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name igp_model_$exn \
+#                         --eval_policy ur --gpu_id 0 AGENT.IG_PLANNER.igp_model_dir=data/checkpoints/igp/$exn &
+# done
 
 # dialate size 3 is default setting
 # exp_name=(3 1)
@@ -93,5 +93,20 @@ done
 #                         --eval_policy ur --gpu_id 0 AGENT.PLANNER.obs_dilation_selem_radius=$exn &
 # done
 #############################################
+python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+                        --exp_name newlc_ur_gtsm1_sliding1 --gt_semantic --allow_sliding \
+                        --eval_policy ur --gpu_id $GPU_ID &
+# python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name newlc_ur_gtsm0_run2 --save_video \
+#                         --eval_policy ur --gpu_id $GPU_ID &
+
+
+# exp_name=(1 0) # add habitat web
+# for exn in "${exp_name[@]}"
+# do
+#     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name newlc_ur_gtsm_$exn --save_video \
+#                         --eval_policy $exn --gpu_id $GPU_ID GROUND_TRUTH_SEMANTICS=1 &
+# done
 
 wait

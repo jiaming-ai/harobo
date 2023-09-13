@@ -4,6 +4,7 @@ from typing import Dict, Tuple
 from home_robot.core.interfaces import Observations
 from home_robot.perception.constants import RearrangeDETICCategories
 from perception.detection.detic_perception import DeticPerception
+import numpy as np
 
 
 def read_category_map_file(
@@ -138,5 +139,24 @@ class OvmmPerception:
         if not self.config.GROUND_TRUTH_SEMANTICS:
             obs.semantic = ret['semantic']
             self._process_obs(obs)
+            
+        else:
+            instance_classes = np.array([
+                obs.task_observations["object_goal"],
+                obs.task_observations["start_recep_goal"],
+                obs.task_observations["end_recep_goal"]
+                ]) # corresponds to object, start_recep, end_recep
+            instance_scores = np.array([1,1,1])
+            masks = np.zeros((3,*obs.semantic.shape))
+
+            masks[0] = obs.semantic==obs.task_observations["object_goal"]
+            if "start_recep_goal" in obs.task_observations:
+                masks[1] = obs.semantic==obs.task_observations["start_recep_goal"]
+            if "end_recep_goal" in obs.task_observations:
+                masks[2] = obs.semantic==obs.task_observations["end_recep_goal"]
+
+            obs.task_observations["instance_classes"] = instance_classes
+            obs.task_observations["instance_scores"] = instance_scores
+            obs.task_observations["masks"] = masks
             
         return obs

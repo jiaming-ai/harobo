@@ -468,13 +468,13 @@ if __name__ == "__main__":
         "--no_interactive",
         action="store_true",
         help="Whether to render the environment or not",
-        default=False,
+        default=True,
     )
     parser.add_argument(
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=None,
+        default=[58],
     )
     parser.add_argument(
         "--eval_eps_total_num",
@@ -519,7 +519,7 @@ if __name__ == "__main__":
         "--gt_semantic",
         help="whether to use ground truth semantic map",
         action="store_true",
-        default=False,    
+        default=True,    
     )
     parser.add_argument(
         "--no_use_prob_map",
@@ -539,7 +539,7 @@ if __name__ == "__main__":
 
     config = get_habitat_config(args.habitat_config_path, overrides=[])
     baseline_config = OmegaConf.load(args.baseline_config_path)
-    # extra_config = OmegaConf.from_dotlist(["AGENT.PLANNER.obs_dilation_selem_radius=3"])
+    # extra_config = OmegaConf.from_dotlist(["AGENT.IG_PLANNER.use_ig_predictor=False","AGENT.IG_PLANNER.other_ig_type=ray_casting"])
     # baseline_config = OmegaConf.merge(baseline_config, extra_config)
     config = DictConfig({**config, **baseline_config})
     evaluator = InteractiveEvaluator(config,args.gpu_id,args=args)
