@@ -229,6 +229,14 @@ class Categorical2DSemanticMapState:
         
         return np.copy(prob_map.cpu().numpy())
     
+    def get_global_probability_map_tensor(self, e) -> np.ndarray:
+        """Get local probability map for an environment."""
+        return torch.sigmoid(self.global_map[e, MC.PROBABILITY_MAP, :, :]).clone()
+        
+    def get_global_exp_map_tensor(self, e) -> np.ndarray:
+        """Get local probability map for an environment."""
+        return (self.global_map[e, MC.EXPLORED_MAP, :, :]).clone()
+
     def get_promising_map(self, e) -> np.ndarray:
         """Get local promising map for an environment."""
         prob_map = torch.sigmoid(self.local_map[e, MC.PROBABILITY_MAP, :, :])

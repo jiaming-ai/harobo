@@ -12,19 +12,30 @@ def process_individual_result(exp_name, file):
         print(file)
         print(f.read())
         print('----------------')
-        
-        
-EXP = ["ur_ig_alpha_4","rl_detic","fbe_detic", 
-       "ablation_ig_no_prob_run2","ablation_ig_rendering","newlc_ur_gtsm1_sliding1"]
+
+# EXP = ['timing_ig_rendering','video_sum_prob_map_ur',] # for ig timing
+
+# EXP = ['baseline_rl','baseline_fbe', "ur_ig_alpha_4",'ablation_argmax']
+EXP = ["ur_ig_alpha_4","rl_detic","fbe_detic", ] # for plotting
+    #    "ablation_ig_no_prob_run2","ablation_ig_rendering","ablation_ig_ray_casting"]
 LABEL_MAP = {
     "igp_IG_dialate_5": "OIG",
     "rl_detic": "RL",
-    "fbe_detic": "FBE"
+    "fbe_detic": "FBE",
+    "ur_ig_alpha_4": "UR",
+    "ablation_ig_no_prob_run2": "UR-IG w/o prob",
+    "ablation_ig_rendering": "UR-IG rendering",
+    "ablation_ig_ray_casting": "UR-IG ray casting",
+    "baseline_rl": "RL",
+    "baseline_fbe": "FBE",
+    "sum_prob_map_ur": "UR",
+    "ablation_argmax": "UR argmax",
 }
 # EXP = None
 def summarize_result():
     
     exp_results = {}
+    results_df = pd.DataFrame()
     
     for exp_name in os.listdir(result_dir):
         if os.path.isdir(result_dir+exp_name):
@@ -41,6 +52,7 @@ def summarize_result():
             total_steps = 0
             total_dist_travelled = 0
             total_time = 0
+            ig_time_all = []
             i = 0
             for file in os.listdir(result_dir+exp_name):
                 if file.endswith('.json'):
@@ -51,6 +63,15 @@ def summarize_result():
                     if result['distance_to_goal'] < 0.5:
                         success_count += 1
                         spl += result['spl']
+                        
+                        # rename video to success
+                        # vfn = result_dir+exp_name+'/'+file.replace('.json','.mp4')
+                        # vsfn = result_dir+exp_name+'/success_'+file.replace('.json','.mp4')
+                        # vfn = vfn.replace(' ','_')
+                        # vsfn = vsfn.replace(' ','_').replace('False','True')
+                        # if os.path.exists(vfn):
+                        #     print(f'rename {vfn} to {vfn.replace("False","True")}')
+                        #     os.rename(vfn,vsfn)
                        
                     # total steps count
                     total_steps += result['steps']
@@ -73,6 +94,11 @@ def summarize_result():
                     e = result['entropy']
                     entropy_all[i,:len(e)] = e
                     entropy_all[i,len(e):] = e[-1]
+
+                    # timeing
+                    if "ig_times" in result:
+                        ig_time_all += result["ig_times"]
+                        
                     
                     i += 1
                     if i == 200:
@@ -90,6 +116,10 @@ def summarize_result():
                 print(f'Total time: {total_time/total_steps:.2f}')
                 
                 print(f'Distance travelled per step: {total_dist_travelled/total_steps:.2f}')
+
+                avg_ig_time = np.mean(ig_time_all)
+                std_ig_time = np.std(ig_time_all)
+                print(f'IG time: {avg_ig_time:.2f} +/- {std_ig_time:.2f}')
                 print(f'-------------------------')
             else:
                 spl = 0
@@ -103,7 +133,12 @@ def summarize_result():
             exp_results[exp_name]['close_coverage'] = close_coverage_all
             exp_results[exp_name]['check_coverage'] = check_coverage_all
             exp_results[exp_name]['entropy'] = entropy_all
+
+            col_name = LABEL_MAP[exp_name]
+            results_df[col_name+'_E'] = exp_coverage_all.mean(axis=0)
+            results_df[col_name+'_C'] = check_coverage_all.mean(axis=0)
             
+    results_df.to_csv('datadump/results.csv')
     return exp_results
                     
 results = summarize_result()
@@ -120,20 +155,19 @@ def plot(results,item):
     
     
 def plot_all():
-    items = ['exp_coverage','close_coverage','check_coverage']
-    titles = ['(a) Total explored area','(b) Closely checked area','(c) Checked promising area']
-    fig, axes = plt.subplots(1,3)
+    items = ['exp_coverage','check_coverage']
+    ylabel = ['Total explored area','Total checked promising area']
+    fig, axes = plt.subplots(1,2)
     for i,item in enumerate(items):
         for k,v in results.items():
             data = v[item]
             axes[i].plot(v[item].mean(axis=0),label=LABEL_MAP[k])
             
-        axes[i].legend()
-        axes[i].set_xlabel('Step')
+        axes[i].legend( prop={'size': 18})
+        axes[i].set_xlabel('Number of step',fontsize=20)
         # axes[i].xaxis.tick_top()
         # axes[i].xaxis.set_label_position('top')
-        axes[i].set_ylabel('Area')
-        axes[i].set_title(titles[i],y=-0.15)
+        axes[i].set_ylabel(ylabel[i], fontsize=20)
 
         
         

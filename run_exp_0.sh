@@ -2,7 +2,7 @@
 
 trap 'kill 0' SIGINT
 
-GPU_ID=0
+GPU_ID=3
 # #############################################
 # # baseline experiments
 # #############################################
@@ -93,13 +93,16 @@ GPU_ID=0
 #                         --eval_policy ur --gpu_id 0 AGENT.PLANNER.obs_dilation_selem_radius=$exn &
 # done
 #############################################
-python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name newlc_ur_gtsm1_sliding1 --gt_semantic --allow_sliding \
-                        --eval_policy ur --gpu_id $GPU_ID &
+# python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name newlc_ur_gtsm1_sliding1 --gt_semantic --allow_sliding \
+#                         --eval_policy ur --gpu_id $GPU_ID &
 # python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
 #                         --exp_name newlc_ur_gtsm0_run2 --save_video \
 #                         --eval_policy ur --gpu_id $GPU_ID &
 
+python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+                    --exp_name timing_ig_rendering \
+                    --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.ig_predictor_type=rendering &
 
 # exp_name=(1 0) # add habitat web
 # for exn in "${exp_name[@]}"

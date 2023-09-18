@@ -157,19 +157,17 @@ class ObjectNavAgent(Agent):
 
         self.save_info_gain_data = kwargs.get('collect_data',False) # for training
 
-        # self.pn_agent = PNAgent(self.device)
         self.ig_renderer = None
 
-        self.use_ig_predictor = config.AGENT.IG_PLANNER.use_ig_predictor
-        self.other_ig_type = config.AGENT.IG_PLANNER.other_ig_type
-        if self.use_ig_predictor:
+        self.ig_predictor_type = config.AGENT.IG_PLANNER.ig_predictor_type
+        self.utility_exp = config.AGENT.IG_PLANNER.utility_exp
+        if self.ig_predictor_type == 'oig':
             igp_model_dir = config.AGENT.IG_PLANNER.igp_model_dir
             self.ig_predictor = IGPredictor(igp_model_dir,self.device)
-            self.utility_exp = config.AGENT.IG_PLANNER.utility_exp
         else:
             self.max_render_loc = 150
             self.uniform_sampling = True
-            if self.other_ig_type == 'ray_casting':
+            if self.ig_predictor_type == 'ray_casting':
                 self.ig_ray_casting = IGRayCasting(config,device=self.device)
 
         #### stuck detection ####
@@ -308,7 +306,7 @@ class ObjectNavAgent(Agent):
         found_goal = found_goal.squeeze(1).cpu()
 
         ig_vis_list = [None for e in range(self.num_environments)]
-        
+        ig_time_list = [None for e in range(self.num_environments)]
         for e in range(self.num_environments):
             self.semantic_map.update_frontier_map(e, frontier_map[e][0].cpu().numpy())
             # find object goal
@@ -322,48 +320,56 @@ class ObjectNavAgent(Agent):
                 self._global_hgoal_pose[e] = self.semantic_map.local_map_coords_to_hab_world_frame(e, pos)
 
                 self._state[e] = 2 # go to object goal
-            # if not find object goal and need to update high goal
-            elif self._check_n_update_need_replan_ur_goal(e):
-                if self.use_ig_predictor:
-                    pred_ig, ig_vis = self._compute_info_gains_igp(e)
-                    utility_map,local_goal_coords,dist = self._select_goal_igp(e, pred_ig)
-                    self._ur_goal_dist[e] = dist
-                    self._ur_local_goal_coords[e] = local_goal_coords
-                    self._global_hgoal_pose[e] = self.semantic_map.local_map_coords_to_hab_world_frame(e, local_goal_coords)
-                    goal_map_e = self._get_goal_map(local_goal_coords)
-                    if self.visualize:
-                        ig_vis['utility'] = render_plt_image(utility_map)
-                        ig_vis_list[e] = ig_vis
-                else:
+            
+            # if not find object goal and use a IG planner
+            else:
+                # if need to update high goal
+                if self._check_n_update_need_replan_ur_goal(e):
                     import time
                     start = time.time()
-                    if self.other_ig_type == 'ray_casting':
-                        local_goal_coords, global_pose, info = self._compute_info_gains_ray_casting(e)
+                    if self.ig_predictor_type in ['oig','argmax']:
+                        if self.ig_predictor_type == 'oig':
+                            pred_ig, ig_vis = self._compute_info_gains_igp(e)
+                        else:
+                            pred_ig, ig_vis = self._compute_info_gains_by_argmax(e)
+                        utility_map,local_goal_coords,dist = self._select_goal_igp(e, pred_ig)
+                        self._ur_goal_dist[e] = dist
+                        self._ur_local_goal_coords[e] = local_goal_coords
+                        self._global_hgoal_pose[e] = self.semantic_map.local_map_coords_to_hab_world_frame(e, local_goal_coords)
+                        goal_map_e = self._get_goal_map(local_goal_coords)
+                        if self.visualize:
+                            ig_vis['utility'] = render_plt_image(utility_map)
+                            ig_vis_list[e] = ig_vis
                     else:
-                        local_goal_coords, global_pose, info = self._compute_info_gains_by_render(e)
+                        if self.ig_predictor_type == 'ray_casting':
+                            local_goal_coords, global_pose, info = self._compute_info_gains_ray_casting(e)
+                        elif self.ig_predictor_type == 'rendering':
+                            local_goal_coords, global_pose, info = self._compute_info_gains_by_render(e)
+                        else:
+                            raise NotImplementedError
+                        if local_goal_coords is None:
+                            continue
+                        dist_map = self._get_dist_map(e)
+                        selected_goal_coords, selected_info, selected_idx = self._select_goal(dist_map,info,local_goal_coords)
+                        self._global_hgoal_pose[e] = global_pose[selected_idx] # selected global pos
+                        self._ur_local_goal_coords[e] = local_goal_coords[selected_idx] # selected local pos
+
+                        # local_goal_coords = self._ur_local_goal_coords[e]
+                        self._ur_goal_dist[e] = dist_map[local_goal_coords[0,0],local_goal_coords[0,1]].item() # we only consider the first goal
+                        goal_map_e = self._get_goal_map(selected_goal_coords)
+                    oig_time = time.time() - start
+                    ig_time_list[e] = oig_time
+
+                    self._state[e] = 0 # go to the ur goal
+                    self.semantic_map.update_global_goal_for_env(e, goal_map_e)
                     
-                    if local_goal_coords is None:
-                        continue
-                    dist_map = self._get_dist_map(e)
-                    selected_goal_coords, selected_info, selected_idx = self._select_goal(dist_map,info,local_goal_coords)
-                    self._global_hgoal_pose[e] = global_pose[selected_idx] # selected global pos
-                    self._ur_local_goal_coords[e] = local_goal_coords[selected_idx] # selected local pos
-                    print("time to get info map: ", time.time() - start)
-
-                    # local_goal_coords = self._ur_local_goal_coords[e]
-                    self._ur_goal_dist[e] = dist_map[local_goal_coords[0,0],local_goal_coords[0,1]].item() # we only consider the first goal
-                    goal_map_e = self._get_goal_map(selected_goal_coords)
-
-                self._state[e] = 0 # go to the ur goal
-                self.semantic_map.update_global_goal_for_env(e, goal_map_e)
-                
-            # not find obj and no need to update high goal
-            # we just need to transform the high goal to account for the robot's movement
-            else:
-                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
-                self._ur_local_goal_coords[e] = goal_coords
-                goal_map = self._get_goal_map(goal_coords)
-                self.semantic_map.update_global_goal_for_env(e, goal_map)
+                # not find obj and no need to update high goal
+                # we just need to transform the high goal to account for the robot's movement
+                else:
+                    goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
+                    self._ur_local_goal_coords[e] = goal_coords
+                    goal_map = self._get_goal_map(goal_coords)
+                    self.semantic_map.update_global_goal_for_env(e, goal_map)
                 
 
         self.timesteps = [self.timesteps[e] + 1 for e in range(self.num_environments)]
@@ -407,29 +413,24 @@ class ObjectNavAgent(Agent):
             for e in range(self.num_environments)
         ]
 
+        vis_inputs = [
+            {
+                "timestep": self.timesteps[e],
+                "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
+                "ig_time": ig_time_list[e],
+            }
+            for e in range(self.num_environments)
+        ]
+
         if self.visualize:
-            vis_inputs = [
-                {
-                    "explored_map": self.semantic_map.get_explored_map(e),
-                    "semantic_map": self.semantic_map.get_semantic_map(e),
-                    "been_close_map": self.semantic_map.get_been_close_map(e),
-                    "timestep": self.timesteps[e],
-                    "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
-                    "ig_vis": ig_vis_list[e],
-                }
-                for e in range(self.num_environments)
-            ]
-            # if self.use_ig_predictor:
-            #     for e in range(self.num_environments):
-            #         vis_inputs[e]["ig_vis"] = ig_vis_list[e]
-        else:
-            vis_inputs = [
-                {
-                    "timestep": self.timesteps[e],
-                    "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
-                }
-                for e in range(self.num_environments)
-            ]
+            for e in range(self.num_environments):
+                vis_inputs[e].update(
+                    {
+                        "explored_map": self.semantic_map.get_explored_map(e),
+                        "semantic_map": self.semantic_map.get_semantic_map(e),
+                        "been_close_map": self.semantic_map.get_been_close_map(e),
+                        "ig_vis": ig_vis_list[e],
+                    })
 
         return planner_inputs, vis_inputs
 
@@ -514,7 +515,7 @@ class ObjectNavAgent(Agent):
 
     def act(self, obs: Observations) -> Tuple[DiscreteNavigationAction, Dict[str, Any]]:
         """Act end-to-end."""
-        if self.ig_renderer is None:
+        if self.ig_renderer is None and self.ig_predictor_type == 'rendering':
             self.init_ig_renderer(obs)
 
         # t0 = time.time()
@@ -996,6 +997,29 @@ class ObjectNavAgent(Agent):
 
         return local_exp_pos_map_frame_sorted, exp_pos_sorted, info_sorted
     
+    def _compute_info_gains_by_argmax(self,e):
+        """
+        simply select the point with the highest probability
+        """
+        prob_map = self.semantic_map.get_global_probability_map_tensor(e) # [H, W]
+        # exp_map = self.semantic_map.get_global_exp_map_tensor(e) # [H, W]
+        # prob_map[exp_map==0] = 0 # we don't want to go to unexplored areas
+        
+        obstacle = self.semantic_map.get_dialated_obstacle_map_global(e,self.ur_obstacle_dialate_radius) # [M x M]
+        
+        # we add obstacles from collision map
+        collision_map = torch.from_numpy(self.planner.collision_map).to(self.device)
+        obstacle = torch.logical_or(obstacle, collision_map)
+        prob_map[obstacle] = 0
+
+        max_prob, idx = torch.max(prob_map.view(-1), dim=0)
+        x = idx // prob_map.shape[1]
+        y = idx % prob_map.shape[1]
+        pred_ig = torch.zeros_like(prob_map)
+        pred_ig[x,y] = 1.0
+
+        return pred_ig, {}
+        
     def _compute_info_gains_ray_casting(self,e):
         """
         compute the info gains for 

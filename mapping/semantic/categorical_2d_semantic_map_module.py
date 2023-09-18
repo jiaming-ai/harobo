@@ -585,8 +585,8 @@ class Categorical2DSemanticMapModule(nn.Module):
         # # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
 
         ########### end PMO ###################
-        # prob_map, _ = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
-        prob_map = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].sum(3)
+        prob_map, _ = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
+        # prob_map = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].sum(3)
 
         # TODO: should we use close_range or exp, or just all viewable area?
         # we can use a smaller prior for all viewable area, and bigger prior for close range

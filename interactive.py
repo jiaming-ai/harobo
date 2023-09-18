@@ -246,7 +246,7 @@ class InteractiveEvaluator():
         ob = env.reset()
         # update_detic_perception_vocab(ob, detic_perception)
 
-        visualizer = Visualizer(self.config,self.env._dataset)
+        visualizer = Visualizer(self.config,self.env._dataset,self.args)
         visualizer.reset()
         agent.reset_vectorized([self.env.current_episode()])
         agent_info = None
@@ -468,13 +468,13 @@ if __name__ == "__main__":
         "--no_interactive",
         action="store_true",
         help="Whether to render the environment or not",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[58],
+        default=[99],
     )
     parser.add_argument(
         "--eval_eps_total_num",

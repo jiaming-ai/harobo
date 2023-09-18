@@ -26,7 +26,7 @@ from utils.visualization import (
 import os
 DEBUG = os.environ.get("DEBUG", 0)
 DEBUG = int(DEBUG)
-# DEBUG = False
+DEBUG = False
 
 def vis(voxel,pred,gt):
     voxel = voxel[0].cpu().detach()
@@ -76,15 +76,16 @@ def eval_epoch(net,dataloader):
         if DEBUG:
             if (info_map[0,1] > 1).sum() > 0:
                 vis(voxel,pred,info_map)
-        loss = net.loss(pred,info_map)
-        all_loss.append(loss.item())
+        loss = net.loss(pred,info_map,reduction='none')
+        all_loss.extend(loss.tolist())
 
         if step % log_interval == 0:
             print(f"Eval Step {step}, Loss {np.mean(all_loss)}")
     
     avg_loss = np.mean(all_loss)
-    print(f"Eval Loss {avg_loss}")
-    return avg_loss
+    std = np.std(all_loss)
+    # print(f"Eval Loss {avg_loss}")
+    return avg_loss, std
 
 
 def init_seed(seed):
@@ -100,7 +101,7 @@ def main():
     parser.add_argument("--gpu_id", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exp_name", type=str, default="unet_c16_lossis1_dlis10_more")
-    parser.add_argument("--eval_only", action="store_true",default=False)
+    parser.add_argument("--eval_only", action="store_true",default=True)
     parser.add_argument("--options", type=str,default='') # "net.c0=8,..."
     
     args = parser.parse_args()
@@ -121,7 +122,7 @@ def main():
         train(args,config)
 
 def eval(args, config):
-
+    print(f'Evaluating exp {args.exp_name}')
     
     model_dir = f"data/checkpoints/igp/{args.exp_name}"
     config_path = f"{model_dir}/config.yaml"
@@ -145,8 +146,8 @@ def eval(args, config):
     net.load_state_dict(torch.load(f"{model_dir}/best.pth"))
     net.to(device)
     with torch.no_grad():
-        loss = eval_epoch(net,dataloader_eval)
-    print(f"Eval Loss {loss}")
+        mae, std = eval_epoch(net,dataloader_eval)
+    print(f"Eval MAE {mae}, std {std}")
 
 
 def train(args,config):

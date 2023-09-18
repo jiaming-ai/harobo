@@ -57,7 +57,7 @@ class IGPNet(nn.Module):
         """
         return self.backbone(voxel)
 
-    def loss(self, pred, info_map):
+    def loss(self, pred, info_map, reduction='mean'):
         has_val = info_map >= 0
         loss = self.loss_fn(pred, info_map)
 
@@ -68,8 +68,11 @@ class IGPNet(nn.Module):
             emphasis[:,1,...] = i_map # B x M x M
             loss[emphasis.bool()] *= self.i_s_weight # B x 2 x M x M
             
-        loss = loss[has_val].mean()
-
+        if reduction == 'mean':
+            loss = loss[has_val].mean()
+        else:
+            loss = loss[has_val]
+            
         return loss
 
 # class IGPNet(nn.Module):

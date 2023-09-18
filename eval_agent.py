@@ -279,7 +279,8 @@ class InteractiveEvaluator():
         eps_step = 0
         pre_pose = np.zeros(2)
         total_dist = 0
-        total_time = 0
+        total_planning_time = 0
+        total_ig_time = []
         while ep_idx < env.number_of_episodes:
 
             if self.args.skip_existing:
@@ -294,7 +295,7 @@ class InteractiveEvaluator():
             # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             start_time = time.time()
             action, agent_info, _ = agent.act(ob)
-            total_time += time.time() - start_time
+            total_planning_time += time.time() - start_time
             # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
             # pre_entropy = agent_info["entropy"]
             # print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
@@ -304,6 +305,8 @@ class InteractiveEvaluator():
                 if len(checking_area_list) > 0 else agent_info["checking_area"])
             entropy_list.append(agent_info["entropy"])
             close_coverage_list.append(agent_info["close_coverage"])
+            if agent_info["ig_time"] is not None:
+                total_ig_time.append(agent_info["ig_time"])
 
             if visualize:
 
@@ -311,17 +314,23 @@ class InteractiveEvaluator():
                 # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
                 # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
 
+                # first visualize thrid person
+                draw_ob = ob.third_person_image
+                draw_ob = cv2.resize(
+                    draw_ob,
+                    (640, 640),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+
                 #  visualize detected instances
                 if 'semantic_frame' in ob.task_observations:
-                    # draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
                     rgb_ob = ob.task_observations['semantic_frame']
                     rgb_ob = cv2.resize(
                         rgb_ob,
                         (640, 640),
                         interpolation=cv2.INTER_NEAREST,
                     )
-                    draw_ob = rgb_ob
-                    # draw_ob[:640,80:560,:] = ob.task_observations['semantic_frame']
+                    draw_ob = np.concatenate([draw_ob, rgb_ob[:,:,:3]], axis=1)
                 
                 
                 # visualize semantic map
@@ -336,17 +345,18 @@ class InteractiveEvaluator():
                 draw_ob = np.concatenate([draw_ob, semantic_map_vis[:,:,:3]], axis=1)
 
                 # visualize probabilistic map
-                if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
-                    prob_map = agent_info['probabilistic_map']
-                    prob_map = np.flipud(prob_map)
-                    prob_map = cv2.resize(
-                        prob_map,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    prob_map = (prob_map * 255).astype(np.uint8)
-                    prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
-                    draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
+                # IGNORE THIS FOR NOW
+                # if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
+                #     prob_map = agent_info['probabilistic_map']
+                #     prob_map = np.flipud(prob_map)
+                #     prob_map = cv2.resize(
+                #         prob_map,
+                #         (640, 640),
+                #         interpolation=cv2.INTER_NEAREST,
+                #     )
+                #     prob_map = (prob_map * 255).astype(np.uint8)
+                #     prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
+                #     draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
                 
                 # visualize info_gain map for ur policy only
                 if self.args.eval_policy == 'ur':
@@ -408,7 +418,8 @@ class InteractiveEvaluator():
                     'checking_area': checking_area_list,
                     'entropy': entropy_list,
                     'close_coverage': close_coverage_list,
-                    'total_time': total_time,
+                    'total_time': total_planning_time,
+                    'ig_times': total_ig_time,
                 }
                 results.append(eps_result)
                 fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
@@ -436,7 +447,8 @@ class InteractiveEvaluator():
                 eps_step = 0
                 total_dist = 0
                 pre_pose = np.zeros(2)
-                total_time = 0
+                total_planning_time = 0
+                total_ig_time = []
                 util_img = np.zeros((640,640,3),dtype=np.uint8)
 
                 print("*"*20)
