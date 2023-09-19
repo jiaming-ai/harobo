@@ -487,7 +487,7 @@ if __name__ == "__main__":
         "--no_render",
         action="store_true",
         help="Whether to render the environment or not",
-        default=False,
+        default=True,
     )
     parser.add_argument(
         "--no_interactive",

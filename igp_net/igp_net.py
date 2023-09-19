@@ -1,9 +1,6 @@
 
 import torch
 import torch.nn as nn
-import ocnn.octree as octree
-import ocnn
-from ocnn.octree import Octree
 # from .igp_net import OCResNet, OCLeNet
 from .unet import UNetBackBone
 from .resnet import ResNetBackbone
