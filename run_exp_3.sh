@@ -35,17 +35,17 @@ trap 'kill 0' SIGINT
 #                         --exp_name newlc_ur_gtsm0_run2 \
 #                         --eval_policy ur --gpu_id $GPU_ID &
 
-exp_name=("fbe" "rl") # add habitat web
-for exn in "${exp_name[@]}"
-do
-    python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name video_baseline_$exn --save_video \
-                        --eval_policy $exn --gpu_id $GPU_ID &
-    GPU_ID=$((GPU_ID+1))
-done
+# exp_name=("fbe" "rl") # add habitat web
+# for exn in "${exp_name[@]}"
+# do
+#     python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                         --exp_name video_baseline_$exn --save_video \
+#                         --eval_policy $exn --gpu_id $GPU_ID &
+#     GPU_ID=$((GPU_ID+1))
+# done
 exn="ur"
 python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name video_sum_prob_map_$exn --save_video \
+                        --exp_name video2_sum_prob_map_$exn --save_video \
                         --eval_policy $exn --gpu_id $GPU_ID &
 # exp_name=(7 5)
 

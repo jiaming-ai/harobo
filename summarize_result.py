@@ -31,7 +31,7 @@ LABEL_MAP = {
     "sum_prob_map_ur": "UR",
     "ablation_argmax": "UR argmax",
 }
-# EXP = None
+EXP = None
 def summarize_result():
     
     exp_results = {}
@@ -65,13 +65,13 @@ def summarize_result():
                         spl += result['spl']
                         
                         # rename video to success
-                        # vfn = result_dir+exp_name+'/'+file.replace('.json','.mp4')
-                        # vsfn = result_dir+exp_name+'/success_'+file.replace('.json','.mp4')
-                        # vfn = vfn.replace(' ','_')
-                        # vsfn = vsfn.replace(' ','_').replace('False','True')
-                        # if os.path.exists(vfn):
-                        #     print(f'rename {vfn} to {vfn.replace("False","True")}')
-                        #     os.rename(vfn,vsfn)
+                        vfn = result_dir+exp_name+'/'+file.replace('.json','.mp4')
+                        vsfn = result_dir+exp_name+'/success_'+file.replace('.json','.mp4')
+                        vfn = vfn.replace(' ','_')
+                        vsfn = vsfn.replace(' ','_').replace('False','True')
+                        if os.path.exists(vfn):
+                            print(f'rename {vfn} to {vfn.replace("False","True")}')
+                            os.rename(vfn,vsfn)
                        
                     # total steps count
                     total_steps += result['steps']
@@ -117,10 +117,11 @@ def summarize_result():
                 
                 print(f'Distance travelled per step: {total_dist_travelled/total_steps:.2f}')
 
-                avg_ig_time = np.mean(ig_time_all)
-                std_ig_time = np.std(ig_time_all)
-                print(f'IG time: {avg_ig_time:.2f} +/- {std_ig_time:.2f}')
-                print(f'-------------------------')
+                if len(ig_time_all) > 0:
+                    avg_ig_time = np.mean(ig_time_all)
+                    std_ig_time = np.std(ig_time_all)
+                    print(f'IG time: {avg_ig_time:.2f} +/- {std_ig_time:.2f}')
+                    print(f'-------------------------')
             else:
                 spl = 0
                 success_rate = 0
@@ -134,9 +135,10 @@ def summarize_result():
             exp_results[exp_name]['check_coverage'] = check_coverage_all
             exp_results[exp_name]['entropy'] = entropy_all
 
-            col_name = LABEL_MAP[exp_name]
-            results_df[col_name+'_E'] = exp_coverage_all.mean(axis=0)
-            results_df[col_name+'_C'] = check_coverage_all.mean(axis=0)
+            if exp_name in LABEL_MAP:
+                col_name = LABEL_MAP[exp_name]
+                results_df[col_name+'_E'] = exp_coverage_all.mean(axis=0)
+                results_df[col_name+'_C'] = check_coverage_all.mean(axis=0)
             
     results_df.to_csv('datadump/results.csv')
     return exp_results

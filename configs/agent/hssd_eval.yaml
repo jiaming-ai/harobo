@@ -201,7 +201,7 @@ AGENT:
     goal_update_steps: 150 # controls how often to update the ur goal 
     max_num_changed_cells: 4000 # controls how often to update the ur goal based on the change in the map
     max_num_changed_promising_cells: 1000 # controls how often to update the ur goal based on the change in the map
-    info_gain_alpha: 5 # controls how much to weight the promising area in information gain computation
+    info_gain_alpha: 4 # controls how much to weight the promising area in information gain computation
     ur_obstacle_dialate_radius: 5 # dialate the obstacles when selecting the ur goal so that the robot doesn't get too close to the obstacles
     ur_dist_obstacle_dialate_radius: 3 # dialate the obstacles when computing the distance to the ur goals
     igp_model_dir: "data/checkpoints/igp/unet_c16_lossis1_dlis5_more"

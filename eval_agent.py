@@ -310,66 +310,66 @@ class InteractiveEvaluator():
 
             if visualize:
 
-                # # visualize GT semantic map
-                # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
-                # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
-
                 # first visualize thrid person
-                draw_ob = ob.third_person_image
-                draw_ob = cv2.resize(
-                    draw_ob,
-                    (640, 640),
-                    interpolation=cv2.INTER_NEAREST,
-                )
+                images = {}
+                images['third_person'] = ob.third_person_image # 640 x 640 x 3
+
 
                 #  visualize detected instances
-                if 'semantic_frame' in ob.task_observations:
-                    rgb_ob = ob.task_observations['semantic_frame']
-                    rgb_ob = cv2.resize(
-                        rgb_ob,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    draw_ob = np.concatenate([draw_ob, rgb_ob[:,:,:3]], axis=1)
-                
+                images['rgb_detection'] = ob.task_observations['semantic_frame']
+
+                # visualize depth
+                images['depth'] = ob.depth.copy()
+                images['depth'] = (images['depth'] / 10.0 * 255).astype(np.uint8)
+    
                 
                 # visualize semantic map
                 vis = visualizer.visualize(**agent_info)
-                semantic_map_vis = vis['semantic_map']
-                semantic_map_vis = cv2.resize(
-                    semantic_map_vis,
-                    (640, 640),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                # draw_ob[:,640:1280,:] = semantic_map_vis[:,:,:3]
-                draw_ob = np.concatenate([draw_ob, semantic_map_vis[:,:,:3]], axis=1)
+                images['semantic_map_vis'] = vis['semantic_map']
 
                 # visualize probabilistic map
                 # IGNORE THIS FOR NOW
                 # if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
                 #     prob_map = agent_info['probabilistic_map']
                 #     prob_map = np.flipud(prob_map)
-                #     prob_map = cv2.resize(
-                #         prob_map,
-                #         (640, 640),
-                #         interpolation=cv2.INTER_NEAREST,
-                #     )
-                #     prob_map = (prob_map * 255).astype(np.uint8)
-                #     prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
-                #     draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
                 
                 # visualize info_gain map for ur policy only
                 if self.args.eval_policy == 'ur':
                     ig_vis = agent_info['ig_vis']
                     if ig_vis is not None:
                         util_img = ig_vis['utility']
-                        util_img = cv2.resize(
-                            util_img,
-                            (640, 640),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
                         util_img = np.flipud(util_img)
-                    draw_ob = np.concatenate([draw_ob, util_img[:,:,:3]], axis=1)
+
+                images['utility'] = util_img
+
+            vis_type = 'video'
+            if vis_type == 'paper':
+                draw_ob = np.zeros((640,640*4,3),dtype=np.uint8)
+                for k in ['third_person','rgb_detection','semantic_map_vis','utility']:
+                    img = images[k]
+                    img = cv2.resize(
+                        img,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    draw_ob[:,640*images[k].shape[1]:640*(images[k].shape[1]+1),:3] = img
+
+            elif vis_type == 'video':
+                draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
+                draw_ob[:,0:640,:] = images['third_person']
+                for i, k in enumerate(['rgb_detection','depth', 'semantic_map_vis','utility']):
+                    img = images[k]
+                    img = cv2.resize(
+                        img,
+                        (320, 320),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    row = i // 2
+                    col = i % 2
+                    if img.ndim == 2:
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+                    draw_ob[row*320:(row+1)*320,640+col*320:640+(col+1)*320,:] = img[:,:,:3]
 
             if self.args.save_video:
                 recorder.add_frame(draw_ob)
@@ -499,7 +499,7 @@ if __name__ == "__main__":
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=None,
+        default=[46],
     )
     parser.add_argument(
         "--eval_eps_total_num",
