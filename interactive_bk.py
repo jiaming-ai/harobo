@@ -50,6 +50,7 @@ from utils.visualization import (
     save_img_tensor)
 import torch
 import random
+
 # NON_SCALAR_METRICS = {"top_down_map", "collisions.is_collision"}
 # METRICS = ['OVMMDistToPickGoal', # distance to pick goal
 #            'ovmm_nav_to_pick_succ' # success of navigation to pick goal
@@ -103,7 +104,7 @@ def create_ovmm_env_fn(config,args):
         # we select a subset of episodes to generate the dataset
         eps_select = {}
         eps_list = []
-        skip = 12
+        skip = 24
         eps_per_scene = 12
         for eps in dataset.episodes:
             scene_id = eps.scene_id
@@ -170,7 +171,8 @@ class InteractiveEvaluator():
     def eval(self, num_episodes_per_env=10):
      
         self.env = create_ovmm_env_fn(self.config,self.args)
-        visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
+        # visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
+        visualize = True # make sure to print the metrics
         print(f'Env created')
         agent = OVMMAgent(
             config=self.config,
@@ -180,6 +182,7 @@ class InteractiveEvaluator():
             collect_data=self.args.collect_data,
             eval_rl_nav=(config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"),
             use_FBE_policy=self.args.eval_policy == 'fbe',
+            sim=self.env.habitat_env.env._env.habitat_env.sim, # TODO: remove this
             visualize=visualize,
         )
 
@@ -252,22 +255,15 @@ class InteractiveEvaluator():
         pre_entropy = 0
         ep_idx = 0
         coverage_log_interval = 10
+        row2 = np.zeros((640,1920+640,3),dtype=np.uint8)
         ########################################
         # init evaluation metrics
         # only used for object navigation task
         ########################################
-        visualize=self.args.save_video or (not self.args.no_render) or (not self.args.no_interactive)
         results = []
         recorder = Recording()
         result_dir = f'datadump/exp_results/{self.args.exp_name}/'
         os.makedirs(result_dir, exist_ok=True)
-        tested_episodes = []       
-        for f in os.listdir(result_dir):
-            if f.endswith('.json'):
-                r = json.load(open(os.path.join(result_dir,f),'r'))
-                tested_episodes.append(r['episode_id'])
-
-        util_img = np.zeros((640,640,3),dtype=np.uint8)
 
         want_terminate = False
         forward_steps = 0
@@ -279,99 +275,81 @@ class InteractiveEvaluator():
         eps_step = 0
         pre_pose = np.zeros(2)
         total_dist = 0
-        total_planning_time = 0
-        total_ig_time = []
+        
         while ep_idx < env.number_of_episodes:
-
-            if self.args.skip_existing:
-                current_episodes_id = self.env.current_episode().episode_id
-                if current_episodes_id in tested_episodes:
-                    print(f'Skip existing episode: {current_episodes_id}')
-                    ob = env.reset()
-                    continue
-
-            eps_step += 1
-            if eps_step == 76:
-                print('debug')
             
-            # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
-            start_time = time.time()
+            eps_step += 1
+            
+            print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             action, agent_info, _ = agent.act(ob)
-            total_planning_time += time.time() - start_time
             # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
             # pre_entropy = agent_info["entropy"]
-            # print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
+            print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
 
             exp_coverage_list.append(agent_info["exp_coverage"])
             checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
                 if len(checking_area_list) > 0 else agent_info["checking_area"])
             entropy_list.append(agent_info["entropy"])
             close_coverage_list.append(agent_info["close_coverage"])
-            if agent_info["ig_time"] is not None:
-                total_ig_time.append(agent_info["ig_time"])
 
-            if visualize:
+            # draw_ob = ob.rgb
 
-                # first visualize thrid person
-                images = {}
-                images['third_person'] = ob.third_person_image # 640 x 640 x 3
+            # # visualize GT semantic map
+            # gt_semantic = env.visualizer.get_semantic_vis(ob.semantic,ob.rgb)
+            # draw_ob = np.concatenate([draw_ob,gt_semantic], axis=1)
 
-
-                #  visualize detected instances
-                images['rgb_detection'] = ob.task_observations['semantic_frame']
-
-                # visualize depth
-                images['depth'] = ob.depth.copy()
-                images['depth'] = (images['depth'] / 10.0 * 255).astype(np.uint8)
-    
-                
-                # visualize semantic map
-                vis = visualizer.visualize(**agent_info)
-                images['semantic_map_vis'] = vis['semantic_map']
-
-                # visualize probabilistic map
-                # IGNORE THIS FOR NOW
-                # if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
-                #     prob_map = agent_info['probabilistic_map']
-                #     prob_map = np.flipud(prob_map)
-                
-                # visualize info_gain map for ur policy only
-                if self.args.eval_policy == 'ur':
-                    ig_vis = agent_info['ig_vis']
-                    if ig_vis is not None:
-                        util_img = ig_vis['utility']
-                        util_img = np.flipud(util_img)
-
-                images['utility'] = util_img
-
-            vis_type = 'video'
-            if vis_type == 'paper':
-                draw_ob = np.zeros((640,640*4,3),dtype=np.uint8)
-                for k in ['third_person','rgb_detection','semantic_map_vis','utility']:
-                    img = images[k]
-                    img = cv2.resize(
-                        img,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    draw_ob[:,640*images[k].shape[1]:640*(images[k].shape[1]+1),:3] = img
-
-            elif vis_type == 'video':
+            #  visualize detected instances
+            if 'semantic_frame' in ob.task_observations:
                 draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
-                draw_ob[:,0:640,:] = images['third_person']
-                for i, k in enumerate(['rgb_detection','depth', 'semantic_map_vis','utility']):
-                    img = images[k]
-                    img = cv2.resize(
-                        img,
-                        (320, 320),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    row = i // 2
-                    col = i % 2
-                    if img.ndim == 2:
-                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                draw_ob[:640,80:560,:] = ob.task_observations['semantic_frame']
+            
+            # # visualize objectness
+            # if 'objectiveness_visualization' in ob.task_observations:
+            #     draw_ob = np.concatenate([draw_ob, ob.task_observations['objectiveness_visualization']], axis=1)
+            
+            # visualize semantic map
+            vis = visualizer.visualize(**agent_info)
+            semantic_map_vis = vis['semantic_map']
+            semantic_map_vis = cv2.resize(
+                semantic_map_vis,
+                (640, 640),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            draw_ob = np.concatenate([draw_ob, semantic_map_vis], axis=1)
 
-                    draw_ob[row*320:(row+1)*320,640+col*320:640+(col+1)*320,:] = img[:,:,:3]
+            # visualize probabilistic map
+            if "probabilistic_map" in agent_info and agent_info['probabilistic_map'] is not None:
+                prob_map = agent_info['probabilistic_map']
+                prob_map = np.flipud(prob_map)
+                prob_map = cv2.resize(
+                    prob_map,
+                    (640, 640),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                prob_map = (prob_map * 255).astype(np.uint8)
+                prob_map = cv2.cvtColor(prob_map, cv2.COLOR_GRAY2BGR)
+                draw_ob = np.concatenate([draw_ob, prob_map], axis=1)
+            
+            # visualize info_gain map
+            if "ig_vis" in agent_info:
+                ig_vis = agent_info['ig_vis']
+                if ig_vis is not None:
+                    width = row2.shape[1] // 3
+                    height = row2.shape[0]
+                    
+                    sz = min(width, height)
+                    vis_key=['cs','is','ig','utility']
+                    for i, k in enumerate(vis_key):
+                        img = ig_vis[k]
+                        img = cv2.resize(
+                            img,
+                            (sz, sz),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                        img = np.flipud(img)
+                        row2[:sz, i*sz:(i+1)*sz,:] = img[...,:3]
+                draw_ob = np.concatenate([draw_ob, row2], axis=0)
+                # draw
 
             if self.args.save_video:
                 recorder.add_frame(draw_ob)
@@ -386,19 +364,17 @@ class InteractiveEvaluator():
                     agent.force_update_high_goal(0)
                 action = user_action['action']
 
-           
-            print(f'Action: {action}')
             outputs = env.apply_action(action, agent_info)
-       
             ob, done, info = outputs
 
             if agent_info["skill_done"] != '':
                 want_terminate = True
                 done = True
-            
             dist = np.linalg.norm(ob.gps - pre_pose)
             total_dist += dist
             pre_pose = ob.gps
+            # print(action)
+            
             
             if done:
                 print(f"Episode {ep_idx} finished.")
@@ -421,8 +397,6 @@ class InteractiveEvaluator():
                     'checking_area': checking_area_list,
                     'entropy': entropy_list,
                     'close_coverage': close_coverage_list,
-                    'total_time': total_planning_time,
-                    'ig_times': total_ig_time,
                 }
                 results.append(eps_result)
                 fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
@@ -438,6 +412,7 @@ class InteractiveEvaluator():
                 )
                 visualizer.reset()
                 ep_idx += 1
+                row2 = np.zeros_like(draw_ob)
 
                 # reset eval metrics
                 want_terminate = False
@@ -450,9 +425,6 @@ class InteractiveEvaluator():
                 eps_step = 0
                 total_dist = 0
                 pre_pose = np.zeros(2)
-                total_planning_time = 0
-                total_ig_time = []
-                util_img = np.zeros((640,640,3),dtype=np.uint8)
 
                 print("*"*20)
                 print(f'Goal: {ob.task_observations["goal_name"]}')
@@ -477,7 +449,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gpu_id",
         type=int,
-        default=1,
+        default=3,
         help="GPU id to use for evaluation",
     )
     parser.add_argument(
@@ -502,13 +474,13 @@ if __name__ == "__main__":
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[175],
+        default=[99],
     )
     parser.add_argument(
         "--eval_eps_total_num",
         help="evaluate a subset of episodes",
         type=int,
-        default=200,
+        default=None,
     )
 
     parser.add_argument(
@@ -555,18 +527,6 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
-    parser.add_argument(
-        "--skip_existing",
-        help="whether to skip existing results",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--allow_sliding",
-        help="whether to allow sliding",
-        action="store_true",
-        default=False,
-    )
     
     print("Arguments:")
     args = parser.parse_args()
@@ -579,9 +539,8 @@ if __name__ == "__main__":
 
     config = get_habitat_config(args.habitat_config_path, overrides=[])
     baseline_config = OmegaConf.load(args.baseline_config_path)
-    extra_config = OmegaConf.from_cli(args.opts)
-    baseline_config = OmegaConf.merge(baseline_config, extra_config)
-    print(OmegaConf.to_yaml(baseline_config))
+    # extra_config = OmegaConf.from_dotlist(["AGENT.IG_PLANNER.use_ig_predictor=False","AGENT.IG_PLANNER.other_ig_type=ray_casting"])
+    # baseline_config = OmegaConf.merge(baseline_config, extra_config)
     config = DictConfig({**config, **baseline_config})
     evaluator = InteractiveEvaluator(config,args.gpu_id,args=args)
     print("-" * 100)
@@ -602,12 +561,12 @@ if __name__ == "__main__":
     else:
         raise ValueError(f'Unknown policy type: {args.eval_policy}')
     config.GROUND_TRUTH_SEMANTICS = 1 if args.gt_semantic else 0
-    config.habitat.simulator.habitat_sim_v0.allow_sliding=args.allow_sliding
+
     # if args.eval_policy == 'ur' and not args.no_use_prob_map and not args.gt_semantic:
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = True
     # else:
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = False
-    visualize = args.save_video or (not args.no_render) or (not args.no_interactive)
+
     
     OmegaConf.set_readonly(config, True)
     

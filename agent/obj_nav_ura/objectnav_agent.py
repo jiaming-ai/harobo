@@ -602,6 +602,7 @@ class ObjectNavAgent(Agent):
         self._pre_actions_taken[0].append(act_idx)
         self._pre_pose[0].append(obs.gps)
 
+
         # # test rl planner
         # depth = torch.from_numpy(obs.depth).unsqueeze(0)
         # goal = torch.tensor([-1.,0.]) # debug

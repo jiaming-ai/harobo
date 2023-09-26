@@ -103,7 +103,7 @@ def create_ovmm_env_fn(config,args):
         # we select a subset of episodes to generate the dataset
         eps_select = {}
         eps_list = []
-        skip = 12
+        skip = 22
         eps_per_scene = 12
         for eps in dataset.episodes:
             scene_id = eps.scene_id
@@ -342,34 +342,34 @@ class InteractiveEvaluator():
 
                 images['utility'] = util_img
 
-            vis_type = 'video'
-            if vis_type == 'paper':
-                draw_ob = np.zeros((640,640*4,3),dtype=np.uint8)
-                for k in ['third_person','rgb_detection','semantic_map_vis','utility']:
-                    img = images[k]
-                    img = cv2.resize(
-                        img,
-                        (640, 640),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    draw_ob[:,640*images[k].shape[1]:640*(images[k].shape[1]+1),:3] = img
+                vis_type = 'video'
+                if vis_type == 'paper':
+                    draw_ob = np.zeros((640,640*4,3),dtype=np.uint8)
+                    for k in ['third_person','rgb_detection','semantic_map_vis','utility']:
+                        img = images[k]
+                        img = cv2.resize(
+                            img,
+                            (640, 640),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                        draw_ob[:,640*images[k].shape[1]:640*(images[k].shape[1]+1),:3] = img
 
-            elif vis_type == 'video':
-                draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
-                draw_ob[:,0:640,:] = images['third_person']
-                for i, k in enumerate(['rgb_detection','depth', 'semantic_map_vis','utility']):
-                    img = images[k]
-                    img = cv2.resize(
-                        img,
-                        (320, 320),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    row = i // 2
-                    col = i % 2
-                    if img.ndim == 2:
-                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                elif vis_type == 'video':
+                    draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
+                    draw_ob[:,0:640,:] = images['third_person']
+                    for i, k in enumerate(['rgb_detection','depth', 'semantic_map_vis','utility']):
+                        img = images[k]
+                        img = cv2.resize(
+                            img,
+                            (320, 320),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                        row = i // 2
+                        col = i % 2
+                        if img.ndim == 2:
+                            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-                    draw_ob[row*320:(row+1)*320,640+col*320:640+(col+1)*320,:] = img[:,:,:3]
+                        draw_ob[row*320:(row+1)*320,640+col*320:640+(col+1)*320,:] = img[:,:,:3]
 
             if self.args.save_video:
                 recorder.add_frame(draw_ob)
@@ -487,7 +487,7 @@ if __name__ == "__main__":
         "--no_render",
         action="store_true",
         help="Whether to render the environment or not",
-        default=True,
+        default=False,
     )
     parser.add_argument(
         "--no_interactive",
@@ -499,13 +499,13 @@ if __name__ == "__main__":
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[46],
+        default=None,
     )
     parser.add_argument(
         "--eval_eps_total_num",
         help="evaluate a subset of episodes",
         type=int,
-        default=200,
+        default=1000,
     )
 
     parser.add_argument(
@@ -590,6 +590,10 @@ if __name__ == "__main__":
     random.seed(seed)
     OmegaConf.set_readonly(config, False)
     config.habitat.seed = seed
+    if args.collect_data:
+        config.AGENT.IG_PLANNER.ig_predictor_type='rendering'
+        args.eval_policy = 'ur'
+
     if args.eval_policy == 'rl':
         config.AGENT.SKILLS.NAV_TO_OBJ.type = "rl"
     elif args.eval_policy == 'fbe':
@@ -600,6 +604,7 @@ if __name__ == "__main__":
         raise ValueError(f'Unknown policy type: {args.eval_policy}')
     config.GROUND_TRUTH_SEMANTICS = 1 if args.gt_semantic else 0
     config.habitat.simulator.habitat_sim_v0.allow_sliding=args.allow_sliding
+
     # if args.eval_policy == 'ur' and not args.no_use_prob_map and not args.gt_semantic:
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = True
     # else:

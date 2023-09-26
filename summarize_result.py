@@ -16,7 +16,7 @@ def process_individual_result(exp_name, file):
 # EXP = ['timing_ig_rendering','video_sum_prob_map_ur',] # for ig timing
 
 # EXP = ['baseline_rl','baseline_fbe', "ur_ig_alpha_4",'ablation_argmax']
-EXP = ["ur_ig_alpha_4","rl_detic","fbe_detic", ] # for plotting
+# EXP = ["ur_ig_alpha_4","rl_detic","fbe_detic", ] # for plotting
     #    "ablation_ig_no_prob_run2","ablation_ig_rendering","ablation_ig_ray_casting"]
 LABEL_MAP = {
     "igp_IG_dialate_5": "OIG",
@@ -31,7 +31,7 @@ LABEL_MAP = {
     "sum_prob_map_ur": "UR",
     "ablation_argmax": "UR argmax",
 }
-EXP = None
+EXP = ['video3_default_ur']
 def summarize_result():
     
     exp_results = {}
@@ -45,10 +45,11 @@ def summarize_result():
             total_count = 0
             success_count = 0
             spl = 0
-            exp_coverage_all = np.zeros((200,1250))
-            close_coverage_all = np.zeros((200,1250))
-            check_coverage_all = np.zeros((200,1250))
-            entropy_all = np.zeros((200,1250))
+            total_num = 1000
+            exp_coverage_all = np.zeros((total_num,1250))
+            close_coverage_all = np.zeros((total_num,1250))
+            check_coverage_all = np.zeros((total_num,1250))
+            entropy_all = np.zeros((total_num,1250))
             total_steps = 0
             total_dist_travelled = 0
             total_time = 0
@@ -101,8 +102,8 @@ def summarize_result():
                         
                     
                     i += 1
-                    if i == 200:
-                        break
+                    # if i == 200:
+                    #     break
             if total_count > 0:
                 spl /= total_count
                 success_rate = success_count/total_count

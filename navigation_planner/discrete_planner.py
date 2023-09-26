@@ -573,9 +573,12 @@ class DiscretePlanner:
                     timestep=self.timestep,
                     vis_dir=self.vis_dir,
                 )
-                # if not np.any(navigable_goal_map):
-                #     frontier_map = add_boundary(frontier_map, value=0)
-                #     navigable_goal_map = frontier_map
+              
+                # if no navigable goal, increase the goal distance
+                if not navigable_goal_map.any():
+                    self.min_goal_distance_cm += 10
+                    continue
+
                 self.dd = planner.set_multi_goal(
                     navigable_goal_map,
                     self.timestep,

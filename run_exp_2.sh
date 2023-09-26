@@ -11,9 +11,16 @@ trap 'kill 0' SIGINT
 #                         --eval_policy $exn --gpu_id $GPU_ID --allow_sliding &
 # done
 
-python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                    --exp_name ablation_argmax  --skip_existing \
-                    --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.ig_predictor_type=argmax &
+# python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                     --exp_name ablation_argmax  --skip_existing \
+#                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.ig_predictor_type=argmax &
+
+
+python eval_agent.py --no_render --no_interactive \
+                    --exp_name collect_data --collect_data \
+                    --eval_policy ur --gpu_id $GPU_ID &
+
+
 # python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
 #                     --exp_name replan --save_video \
 #                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.replan_ur_goal_if_stuck=True &

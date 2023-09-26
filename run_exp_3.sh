@@ -1,6 +1,6 @@
 #! /bin/bash
 
-GPU_ID=0
+GPU_ID=1
 trap 'kill 0' SIGINT
 
 # python eval_agent.py --save_video --no_render --no_interactive --eval_eps_total_num 200 \
@@ -43,10 +43,9 @@ trap 'kill 0' SIGINT
 #                         --eval_policy $exn --gpu_id $GPU_ID &
 #     GPU_ID=$((GPU_ID+1))
 # done
-exn="ur"
-python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                        --exp_name video2_sum_prob_map_$exn --save_video \
-                        --eval_policy $exn --gpu_id $GPU_ID &
+python eval_agent.py --no_render --no_interactive \
+                        --exp_name video3_default_ur --save_video \
+                        --eval_policy ur --gpu_id $GPU_ID &
 # exp_name=(7 5)
 
 # for exn in "${exp_name[@]}"
