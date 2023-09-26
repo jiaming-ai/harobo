@@ -1,25 +1,31 @@
-import time
+# Adapted from https://github.com/facebookresearch/home-robot
 
 import torch.nn as nn
-
-from mapping.semantic.categorical_2d_semantic_map_module import (
-    Categorical2DSemanticMapModule,
-)
-
-from navigation_policy.object_navigation.objectnav_frontier_exploration_policy import (
-    ObjectNavFrontierExplorationPolicy,
-)
-
+from mapping.polo.polomap_module import POLoMapModule
+from .fbe_policy import ObjectNavFrontierExplorationPolicy
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+from utils.visualization import (
+    display_grayscale,
+    display_rgb,
+    plot_image,
+    save_image, 
+    draw_top_down_map, 
+    Recording, 
+    visualize_gt,
+    visualize_pred,
+    save_img_tensor)
 
 # Do we need to visualize the frontier as we explore?
 debug_frontier_map = False
-
 
 class ObjectNavAgentModule(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.semantic_map_module = Categorical2DSemanticMapModule(
+        self.semantic_map_module = POLoMapModule(
             frame_height=config.ENVIRONMENT.frame_height,
             frame_width=config.ENVIRONMENT.frame_width,
             camera_height=config.ENVIRONMENT.camera_height,
@@ -50,10 +56,29 @@ class ObjectNavAgentModule(nn.Module):
         self.policy = ObjectNavFrontierExplorationPolicy(
             exploration_strategy=config.AGENT.exploration_strategy
         )
+ 
 
     @property
     def goal_update_steps(self):
         return self.policy.goal_update_steps
+    
+    # def init_dr_planner(self,obs):
+    #     """
+    #     we need obs to init the dr planner
+    #     """
+    #     if 'camera_pose' in obs.__dict__:
+    #         angles = tra.euler_from_matrix(obs.camera_pose[:3, :3], "rzyx")
+    #         self.camera_tilt = - angles[1]
+
+    #         # Get the camera height
+    #         self.camera_height = obs.camera_pose[2, 3]
+    #     else:
+    #         # otherwise use the default values
+    #         self.camera_tilt = 0
+    #         self.camera_height = self.config.ENVIRONMENT.camera_height
+
+    #     # currently only support a single environment
+    #     self.dr_planner = DRPlanner(self.camera_tilt, self.camera_height, self.config, self.device)
 
     def forward(
         self,
@@ -136,7 +161,7 @@ class ObjectNavAgentModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
-            seq_point_clouds
+            seq_extras,
         ) = self.semantic_map_module(
             seq_obs,
             seq_pose_delta,
@@ -164,6 +189,7 @@ class ObjectNavAgentModule(nn.Module):
             seq_start_recep_goal_category = seq_start_recep_goal_category.flatten(0, 1)
         if seq_end_recep_goal_category is not None:
             seq_end_recep_goal_category = seq_end_recep_goal_category.flatten(0, 1)
+        
         # Compute the goal map
         goal_map, found_goal = self.policy(
             map_features,
@@ -192,7 +218,16 @@ class ObjectNavAgentModule(nn.Module):
         # t2 = time.time()
         # print(f"[Policy] Total time: {t2 - t1:.2f}")
 
+        ################# UR policy ################
 
+
+
+
+
+
+
+
+        ###############################################
         return (
             seq_goal_map,
             seq_found_goal,
@@ -203,5 +238,51 @@ class ObjectNavAgentModule(nn.Module):
             seq_global_pose,
             seq_lmb,
             seq_origins,
-            seq_point_clouds
+            seq_extras,
         )
+
+    # def _get_dense_info_gain_map(self, semantic_map, e):
+    #     """
+    #     return the dense info gain map
+        
+    #     """
+    #     exp_pos_all = semantic_map.get_explored_locs(e) # [N, 2]
+    #     n_p = exp_pos_all.shape[0]
+    #     print(f'Num of points: {n_p}')
+    #     if n_p > self._max_render_loc:
+    #         if self._uniform_sampling:
+    #             rng = np.random.default_rng()
+    #             arr = np.arange(n_p)
+    #             rng.shuffle(arr)
+    #             exp_pos = exp_pos_all[arr[:self._max_render_loc]]
+
+    #         else:
+    #             exp_pos = sample_farthest_points(exp_pos_all.unsqueeze(0), K=self._max_render_loc)[0] # [1, N, 2]
+    #             exp_pos = exp_pos.squeeze(0) # [N, 2]
+
+    #     points, feats = semantic_map.get_global_pointcloud(e) # [P, 3], [P, 1]
+    #     points = points.unsqueeze(0) # [1, P, 3]
+    #     feats = feats.unsqueeze(0) # [1, P, 1]
+    #     info_at_locs = self.dr_planner.cal_info_gains(points,feats,exp_pos)
+
+    #     # visualize
+    #     info_sorted, idx = torch.sort(info_at_locs, descending=True)
+    #     exp_pos_map = semantic_map.hab_world_to_map_global_frame(e, exp_pos).long()
+    #     exp_pos_map = exp_pos_map[idx].cpu() # sorted
+
+    #     local_map_color = torch.zeros_like(semantic_map.global_map[e,0]) 
+    #     local_map_color = local_map_color.unsqueeze(-1).repeat(1,1,3).cpu()
+        
+    #     # mark first 5 points as red
+    #     local_map_color[exp_pos_map[:5,0], exp_pos_map[:5,1], :] = torch.tensor([1.,0.,0.])
+    #     # mark the last 5 points as green
+    #     local_map_color[exp_pos_map[-5:,0], exp_pos_map[-5:,1], :] = torch.tensor([0.,1.,0.])
+    #     # mark the rest as grey
+    #     local_map_color[exp_pos_map[5:-5,0], exp_pos_map[5:-5,1], :] = torch.tensor([0.5,0.5,0.5])
+        
+    #     # display all
+    #     local_map = torch.zeros_like(semantic_map.global_map[e,0])
+    #     local_map[exp_pos_map[:,0], exp_pos_map[:,1]] = 1.0
+
+    #     local_map_color = local_map_color.cpu().numpy()
+    #     return local_map_color

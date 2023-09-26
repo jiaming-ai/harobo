@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from mapping.map_utils import MapSizeParameters, init_map_and_pose_for_env
-from mapping.semantic.constants import MapConstants as MC
+from mapping.polo.constants import MapConstants as MC
 from utils.visualization import (
     display_grayscale,
     display_rgb,
@@ -33,16 +33,9 @@ def dialate_tensor(tensor, kernel_size=3):
         tensor.unsqueeze(1), kernel, padding=kernel_size // 2
     ).squeeze(1)
 
-class Categorical2DSemanticMapState:
+class POLoMapState:
     """
-    This class holds a dense 2D semantic map with one channel per object
-    category, the global and local map and sensor pose, as well as the agent's
-    current goal in the local map.
-
-    Map proposed in:
-    Object Goal Navigation using Goal-Oriented Semantic Exploration
-    https://arxiv.org/pdf/2007.00643.pdf
-    https://github.com/devendrachaplot/Object-Goal-Navigation
+   
     """
 
     def __init__(

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from agent.obj_nav_ura.objectnav_agent import ObjectNavAgent
+from agent.obj_nav.objectnav_agent import ObjectNavAgent
 
 from agent.ovmm.ppo_agent import PPOAgent
 from home_robot.core.interfaces import DiscreteNavigationAction, Observations
@@ -16,7 +16,6 @@ from home_robot.perception.constants import RearrangeBasicCategories
 
 import os
 from pathlib import Path
-# HOME_ROBOT_BASE_DIR = str(Path(__file__).resolve().parent.parent.parent / "home-robot") + "/"
 from agent.ovmm.ovmm_perception import (
     OvmmPerception,
     build_vocab_from_category_map,
@@ -64,11 +63,7 @@ class OVMMAgent(ObjectNavAgent):
         self.semantic_sensor = None
         self.skip_skills = config.AGENT.skip_skills
         self.max_pick_attempts = 10
-        # if config.GROUND_TRUTH_SEMANTICS == 0:
-        #     self.semantic_sensor = OvmmPerception(config, device_id)
-        #     self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(
-        #         config.ENVIRONMENT.category_map_file
-        #     )
+
         # always use detic to visualize
         self.semantic_sensor = OvmmPerception(config, device_id)
         self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(

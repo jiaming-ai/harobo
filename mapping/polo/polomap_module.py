@@ -38,7 +38,7 @@ from utils.visualization import (
 debug_maps = False
 
 
-class Categorical2DSemanticMapModule(nn.Module):
+class POLoMapModule(nn.Module):
     """
     This class is responsible for updating a dense 2D semantic map with one channel
     per object category, the local and global maps and poses, and generating
