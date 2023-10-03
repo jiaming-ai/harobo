@@ -262,10 +262,10 @@ class InteractiveEvaluator():
         result_dir = f'datadump/exp_results/{self.args.exp_name}/'
         os.makedirs(result_dir, exist_ok=True)
         tested_episodes = []       
-        for f in os.listdir(result_dir):
-            if f.endswith('.json'):
-                r = json.load(open(os.path.join(result_dir,f),'r'))
-                tested_episodes.append(r['episode_id'])
+        # for f in os.listdir(result_dir):
+        #     if f.endswith('.json'):
+        #         r = json.load(open(os.path.join(result_dir,f),'r'))
+        #         tested_episodes.append(r['episode_id'])
 
         util_img = np.zeros((640,640,3),dtype=np.uint8)
 
@@ -281,6 +281,7 @@ class InteractiveEvaluator():
         total_dist = 0
         total_planning_time = 0
         total_ig_time = []
+        early_termination = False
         while ep_idx < env.number_of_episodes:
 
             if self.args.skip_existing:
@@ -291,31 +292,32 @@ class InteractiveEvaluator():
                     continue
 
             eps_step += 1
-            if eps_step == 76:
+            if eps_step == 800:
                 print('debug')
             
             # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             start_time = time.time()
+            err_msg = None
             action, agent_info, _ = agent.act(ob)
+            # try:
+            #     action, agent_info, _ = agent.act(ob)
+            # except Exception as e:
+            #     err_msg = str(e)
+            #     action = DiscreteNavigationAction.STOP
+            #     print(f'Error: {err_msg}')
             total_planning_time += time.time() - start_time
-            # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
-            # pre_entropy = agent_info["entropy"]
-            # print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
-
-            exp_coverage_list.append(agent_info["exp_coverage"])
-            checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
-                if len(checking_area_list) > 0 else agent_info["checking_area"])
-            entropy_list.append(agent_info["entropy"])
-            close_coverage_list.append(agent_info["close_coverage"])
-            if agent_info["ig_time"] is not None:
-                total_ig_time.append(agent_info["ig_time"])
-
+     
             if visualize:
+                early_termination = agent_info['early_termination']
+                exp_coverage_list.append(agent_info["exp_coverage"])
+                checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
+                    if len(checking_area_list) > 0 else agent_info["checking_area"])
+                entropy_list.append(agent_info["entropy"])
+                close_coverage_list.append(agent_info["close_coverage"])
 
                 # first visualize thrid person
                 images = {}
                 images['third_person'] = ob.third_person_image # 640 x 640 x 3
-
 
                 #  visualize detected instances
                 images['rgb_detection'] = ob.task_observations['semantic_frame']
@@ -387,7 +389,10 @@ class InteractiveEvaluator():
                 action = user_action['action']
 
            
-            print(f'Action: {action}')
+            if isinstance(action, ContinuousNavigationAction):
+                print(f'Continuous action: {action.xyt}')
+            else:
+                print(f'Action: {action}')
             outputs = env.apply_action(action, agent_info)
        
             ob, done, info = outputs
@@ -401,7 +406,7 @@ class InteractiveEvaluator():
             pre_pose = ob.gps
             
             if done:
-                print(f"Episode {ep_idx} finished.")
+                print(f"Episode {ep_idx} finished success: {info['ovmm_nav_to_pick_succ']}")
                 current_episodes_info = self.env.current_episode()
                 
                 # save evaluation results
@@ -423,9 +428,14 @@ class InteractiveEvaluator():
                     'close_coverage': close_coverage_list,
                     'total_time': total_planning_time,
                     'ig_times': total_ig_time,
+                    'error_msg': err_msg,
+                    'early_termination': early_termination,
                 }
                 results.append(eps_result)
-                fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
+                if err_msg is not None:
+                    fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}_error'
+                else:
+                    fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
                 with open(f'{result_dir}/{fname}.json', 'w') as f:
                     json.dump(eps_result, f)
                 if self.args.save_video:
@@ -496,13 +506,13 @@ if __name__ == "__main__":
         "--no_interactive",
         action="store_true",
         help="Whether to render the environment or not",
-        default=False,
+        default=True,
     )
     parser.add_argument(
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[175],
+        default=[63,26,38,12,2],
     )
     parser.add_argument(
         "--eval_eps_total_num",
@@ -547,7 +557,7 @@ if __name__ == "__main__":
         "--gt_semantic",
         help="whether to use ground truth semantic map",
         action="store_true",
-        default=True,    
+        default=False,    
     )
     parser.add_argument(
         "--no_use_prob_map",

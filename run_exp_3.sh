@@ -1,6 +1,6 @@
 #! /bin/bash
 
-GPU_ID=1
+GPU_ID=0
 trap 'kill 0' SIGINT
 
 # python eval_agent.py --save_video --no_render --no_interactive --eval_eps_total_num 200 \
@@ -43,9 +43,9 @@ trap 'kill 0' SIGINT
 #                         --eval_policy $exn --gpu_id $GPU_ID &
 #     GPU_ID=$((GPU_ID+1))
 # done
-python eval_agent.py --no_render --no_interactive \
-                        --exp_name video3_default_ur --save_video \
-                        --eval_policy ur --gpu_id $GPU_ID &
+# python eval_agent.py --no_render --no_interactive \
+#                         --exp_name video3_default_ur --save_video \
+#                         --eval_policy ur --gpu_id $GPU_ID &
 # exp_name=(7 5)
 
 # for exn in "${exp_name[@]}"
@@ -54,6 +54,16 @@ python eval_agent.py --no_render --no_interactive \
 #                         --exp_name igp_IG_dialate_$exn --skip_existing \
 #                         --eval_policy ur --gpu_id 3 AGENT.IG_PLANNER.ur_obstacle_dialate_radius=$exn &
 # done
+
+exp_name=(0.01 0.005 0.001)
+
+for exn in "${exp_name[@]}"
+do
+    python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+                        --exp_name refact_nodecay_lambda_$exn --save_video \
+                        --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.util_lambda=$exn &
+    GPU_ID=$((GPU_ID+1))
+done
 wait
 # map_dilate_size=(1 2 3 4)
 # close_range=(100 150 200 250)

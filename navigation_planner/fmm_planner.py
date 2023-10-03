@@ -59,7 +59,7 @@ class FMMPlanner:
         self.du = int(self.step_size / (self.scale * 1.0))
         self.fmm_dist = None
         self.debug = debug
-        # self.goal_map = None
+        self.goal_map = None
 
     def set_goal(self, goal, auto_improve: bool = False):
         """Set planner goal. Goal should be of size 2, containing x and y positions."""
@@ -92,6 +92,7 @@ class FMMPlanner:
         map_downsample_factor: 1 for no downsampling, 2 for halving both image dimensions.
         """
         assert map_downsample_factor >= 1.0
+        self.goal_map = goal_map.copy()
         traversible = self.traversible
         if map_downsample_factor > 1.0:
             l, w = self.traversible.shape
@@ -207,6 +208,8 @@ class FMMPlanner:
                 "[FMM] Distance to fmm navigable goal pt =",
                 subset[self.du, self.du] * 5,
             )
+        dist_to_goal = subset[self.du, self.du]
+        
         stop = subset[self.du, self.du] < self.goal_tolerance
 
         subset -= subset[self.du, self.du]
@@ -221,13 +224,16 @@ class FMMPlanner:
         (stg_x, stg_y) = np.unravel_index(np.argmin(subset), subset.shape)
 
         # Subset will contain negative distance to goal
-        replan = subset[stg_x, stg_y] > -0.0001
+        # otherwise, it indicates that the goal is not reachable (no path can be found)
+        # either 1) goal is surrounded by obstacles or 2) goal is not reachable 3) agent is surrounded by obstacles
+        no_path_found = subset[stg_x, stg_y] > -0.0001
 
         return (
             (stg_x + state[0] - self.du) * scale,
             (stg_y + state[1] - self.du) * scale,
-            replan,
+            no_path_found,
             stop,
+            dist_to_goal,
         )
 
     @staticmethod

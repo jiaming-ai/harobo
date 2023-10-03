@@ -1,7 +1,7 @@
 # Adapted from https://github.com/facebookresearch/home-robot
 
 import torch.nn as nn
-from mapping.polo.polomap_module import POLoMapModule
+from mapping.polo.polo_map_module import POLoMapModule
 from .fbe_policy import ObjectNavFrontierExplorationPolicy
 import matplotlib.pyplot as plt
 import numpy as np

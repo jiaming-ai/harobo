@@ -17,7 +17,7 @@ import home_robot.mapping.map_utils as mu
 from utils import depth as du
 import home_robot.utils.pose as pu
 import home_robot.utils.rotation as ru
-from mapping.semantic.constants import MapConstants as MC
+from mapping.polo.constants import MapConstants as MC
 from utils.visualization import (
     display_grayscale,
     display_rgb,
@@ -205,143 +205,27 @@ class POLoMapModule(nn.Module):
     @torch.no_grad()
     def forward(
         self,
-        seq_obs: Tensor,
-        seq_pose_delta: Tensor,
-        seq_dones: Tensor,
-        seq_update_global: Tensor,
-        seq_camera_poses: Tensor,
-        init_local_map: Tensor,
-        init_global_map: Tensor,
-        init_local_pose: Tensor,
-        init_global_pose: Tensor,
-        init_lmb: Tensor,
-        init_origins: Tensor,
+        obs: Tensor,
+        pose_delta: Tensor,
+        camera_pose: Tensor,
+        local_map: Tensor,
+        local_pose: Tensor,
         detection_results: Optional[List[Dict[str, Tensor]]] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, IntTensor, Tensor]:
         """Update maps and poses with a sequence of observations and generate map
         features at each time step.
 
-        Arguments:
-            seq_obs: sequence of frames containing (RGB, depth, segmentation)
-             of shape (batch_size, sequence_length, 3 + 1 + num_sem_categories,
-             frame_height, frame_width)
-            seq_pose_delta: sequence of delta in pose since last frame of shape
-             (batch_size, sequence_length, 3)
-            seq_dones: sequence of (batch_size, sequence_length) binary flags
-             that indicate episode restarts
-            seq_update_global: sequence of (batch_size, sequence_length) binary
-             flags that indicate whether to update the global map and pose
-            seq_camera_poses: sequence of (batch_size, 4, 4) extrinsic camera
-             matrices
-            init_local_map: initial local map before any updates of shape
-             (batch_size, MC.NON_SEM_CHANNELS + num_sem_categories, M, M)
-            init_global_map: initial global map before any updates of shape
-             (batch_size, MC.NON_SEM_CHANNELS + num_sem_categories, M * ds, M * ds)
-            init_local_pose: initial local pose before any updates of shape
-             (batch_size, 3)
-            init_global_pose: initial global pose before any updates of shape
-             (batch_size, 3)
-            init_lmb: initial local map boundaries of shape (batch_size, 4)
-            init_origins: initial local map origins of shape (batch_size, 3)
-
-        Returns:
-            seq_map_features: sequence of semantic map features of shape
-             (batch_size, sequence_length, 2 * MC.NON_SEM_CHANNELS + num_sem_categories, M, M)
-            final_local_map: final local map after all updates of shape
-             (batch_size, MC.NON_SEM_CHANNELS + num_sem_categories, M, M)
-            final_global_map: final global map after all updates of shape
-             (batch_size, MC.NON_SEM_CHANNELS + num_sem_categories, M * ds, M * ds)
-            seq_local_pose: sequence of local poses of shape
-             (batch_size, sequence_length, 3)
-            seq_global_pose: sequence of global poses of shape
-             (batch_size, sequence_length, 3)
-            seq_lmb: sequence of local map boundaries of shape
-             (batch_size, sequence_length, 4)
-            seq_origins: sequence of local map origins of shape
-             (batch_size, sequence_length, 3)
-            detection_results: list of detection results of length sequence_length
         """
-        batch_size, sequence_length = seq_obs.shape[:2]
-        device, dtype = seq_obs.device, seq_obs.dtype
-        detection_results = detection_results or [None] * sequence_length
-        
-        map_features_channels = 2 * MC.NON_SEM_CHANNELS + self.num_sem_categories
-        seq_map_features = torch.zeros(
-            batch_size,
-            sequence_length,
-            map_features_channels,
-            self.local_map_size,
-            self.local_map_size,
-            device=device,
-            dtype=dtype,
-        )
-        # n_points = self.screen_h // self.du_scale * self.screen_w // self.du_scale
-        # # n_points = self.screen_h  * self.screen_w 
-        # seq_point_clouds = torch.zeros(
-        #     batch_size,
-        #     sequence_length,
-        #     n_points,
-        #     3,
-        #     device=device,
-        #     dtype=dtype,
-        # )
-        seq_local_pose = torch.zeros(batch_size, sequence_length, 3, device=device)
-        seq_global_pose = torch.zeros(batch_size, sequence_length, 3, device=device)
-        seq_lmb = torch.zeros(
-            batch_size, sequence_length, 4, device=device, dtype=torch.int32
-        )
-        seq_origins = torch.zeros(batch_size, sequence_length, 3, device=device)
-        seq_extras = [None] * sequence_length
-
-        local_map, local_pose = init_local_map.clone(), init_local_pose.clone()
-        global_map, global_pose = init_global_map.clone(), init_global_pose.clone()
-        lmb, origins = init_lmb.clone(), init_origins.clone()
-        for t in range(sequence_length):
-            # Reset map and pose for episodes done at time step t
-            for e in range(batch_size):
-                if seq_dones[e, t]:
-                    mu.init_map_and_pose_for_env(
-                        e,
-                        local_map,
-                        global_map,
-                        local_pose,
-                        global_pose,
-                        lmb,
-                        origins,
-                        self.map_size_parameters,
-                    )
-
-            local_map, local_pose, extras = self._update_local_map_and_pose(
-                seq_obs[:, t],
-                seq_pose_delta[:, t],
+        local_map_new, local_pose_new, extras = self._update_local_map_and_pose(
+                obs,
+                pose_delta,
                 local_map,
                 local_pose,
-                seq_camera_poses,
-                detection_results[t],
+                camera_pose,
+                detection_results,
             )
-            for e in range(batch_size):
-                if seq_update_global[e, t]:
-                    self._update_global_map_and_pose_for_env(
-                        e, local_map, global_map, local_pose, global_pose, lmb, origins
-                    )
-
-            seq_local_pose[:, t] = local_pose
-            seq_global_pose[:, t] = global_pose
-            seq_lmb[:, t] = lmb
-            seq_origins[:, t] = origins
-            seq_map_features[:, t] = self._get_map_features(local_map, global_map)
-            seq_extras[t] = extras
-
-        return (
-            seq_map_features,
-            local_map,
-            global_map,
-            seq_local_pose,
-            seq_global_pose,
-            seq_lmb,
-            seq_origins,
-            seq_extras,
-        )
+        
+        return local_map_new, local_pose_new, extras
 
     def _update_local_map_and_pose(
         self,

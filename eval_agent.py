@@ -103,7 +103,7 @@ def create_ovmm_env_fn(config,args):
         # we select a subset of episodes to generate the dataset
         eps_select = {}
         eps_list = []
-        skip = 22
+        skip = 12
         eps_per_scene = 12
         for eps in dataset.episodes:
             scene_id = eps.scene_id
@@ -262,10 +262,10 @@ class InteractiveEvaluator():
         result_dir = f'datadump/exp_results/{self.args.exp_name}/'
         os.makedirs(result_dir, exist_ok=True)
         tested_episodes = []       
-        for f in os.listdir(result_dir):
-            if f.endswith('.json'):
-                r = json.load(open(os.path.join(result_dir,f),'r'))
-                tested_episodes.append(r['episode_id'])
+        # for f in os.listdir(result_dir):
+        #     if f.endswith('.json'):
+        #         r = json.load(open(os.path.join(result_dir,f),'r'))
+        #         tested_episodes.append(r['episode_id'])
 
         util_img = np.zeros((640,640,3),dtype=np.uint8)
 
@@ -281,6 +281,7 @@ class InteractiveEvaluator():
         total_dist = 0
         total_planning_time = 0
         total_ig_time = []
+        early_termination = False
         while ep_idx < env.number_of_episodes:
 
             if self.args.skip_existing:
@@ -291,29 +292,32 @@ class InteractiveEvaluator():
                     continue
 
             eps_step += 1
+            # if eps_step == 76:
+            #     print('debug')
             
             # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             start_time = time.time()
+            err_msg = None
             action, agent_info, _ = agent.act(ob)
+            # try:
+            #     action, agent_info, _ = agent.act(ob)
+            # except Exception as e:
+            #     err_msg = str(e)
+            #     action = DiscreteNavigationAction.STOP
+            #     print(f'Error: {err_msg}')
             total_planning_time += time.time() - start_time
-            # print(f'Entropy: {agent_info["entropy"]}, change: {agent_info["entropy"] - pre_entropy}')
-            # pre_entropy = agent_info["entropy"]
-            # print(f'exp_area: {agent_info["exp_coverage"]}, checking_area: {agent_info["checking_area"]}')
-
-            exp_coverage_list.append(agent_info["exp_coverage"])
-            checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
-                if len(checking_area_list) > 0 else agent_info["checking_area"])
-            entropy_list.append(agent_info["entropy"])
-            close_coverage_list.append(agent_info["close_coverage"])
-            if agent_info["ig_time"] is not None:
-                total_ig_time.append(agent_info["ig_time"])
-
+     
             if visualize:
+                early_termination = agent_info['early_termination']
+                exp_coverage_list.append(agent_info["exp_coverage"])
+                checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
+                    if len(checking_area_list) > 0 else agent_info["checking_area"])
+                entropy_list.append(agent_info["entropy"])
+                close_coverage_list.append(agent_info["close_coverage"])
 
                 # first visualize thrid person
                 images = {}
                 images['third_person'] = ob.third_person_image # 640 x 640 x 3
-
 
                 #  visualize detected instances
                 images['rgb_detection'] = ob.task_observations['semantic_frame']
@@ -342,34 +346,34 @@ class InteractiveEvaluator():
 
                 images['utility'] = util_img
 
-                vis_type = 'video'
-                if vis_type == 'paper':
-                    draw_ob = np.zeros((640,640*4,3),dtype=np.uint8)
-                    for k in ['third_person','rgb_detection','semantic_map_vis','utility']:
-                        img = images[k]
-                        img = cv2.resize(
-                            img,
-                            (640, 640),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                        draw_ob[:,640*images[k].shape[1]:640*(images[k].shape[1]+1),:3] = img
+            vis_type = 'video'
+            if vis_type == 'paper':
+                draw_ob = np.zeros((640,640*4,3),dtype=np.uint8)
+                for k in ['third_person','rgb_detection','semantic_map_vis','utility']:
+                    img = images[k]
+                    img = cv2.resize(
+                        img,
+                        (640, 640),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    draw_ob[:,640*images[k].shape[1]:640*(images[k].shape[1]+1),:3] = img
 
-                elif vis_type == 'video':
-                    draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
-                    draw_ob[:,0:640,:] = images['third_person']
-                    for i, k in enumerate(['rgb_detection','depth', 'semantic_map_vis','utility']):
-                        img = images[k]
-                        img = cv2.resize(
-                            img,
-                            (320, 320),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                        row = i // 2
-                        col = i % 2
-                        if img.ndim == 2:
-                            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            elif vis_type == 'video':
+                draw_ob = np.zeros((640,1280,3),dtype=np.uint8)
+                draw_ob[:,0:640,:] = images['third_person']
+                for i, k in enumerate(['rgb_detection','depth', 'semantic_map_vis','utility']):
+                    img = images[k]
+                    img = cv2.resize(
+                        img,
+                        (320, 320),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    row = i // 2
+                    col = i % 2
+                    if img.ndim == 2:
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-                        draw_ob[row*320:(row+1)*320,640+col*320:640+(col+1)*320,:] = img[:,:,:3]
+                    draw_ob[row*320:(row+1)*320,640+col*320:640+(col+1)*320,:] = img[:,:,:3]
 
             if self.args.save_video:
                 recorder.add_frame(draw_ob)
@@ -385,6 +389,10 @@ class InteractiveEvaluator():
                 action = user_action['action']
 
            
+            if isinstance(action, ContinuousNavigationAction):
+                print(f'Continuous action: {action.xyt}')
+            else:
+                print(f'Action: {action}')
             outputs = env.apply_action(action, agent_info)
        
             ob, done, info = outputs
@@ -398,7 +406,7 @@ class InteractiveEvaluator():
             pre_pose = ob.gps
             
             if done:
-                print(f"Episode {ep_idx} finished.")
+                print(f"Episode {ep_idx} finished success: {info['ovmm_nav_to_pick_succ']}")
                 current_episodes_info = self.env.current_episode()
                 
                 # save evaluation results
@@ -420,9 +428,14 @@ class InteractiveEvaluator():
                     'close_coverage': close_coverage_list,
                     'total_time': total_planning_time,
                     'ig_times': total_ig_time,
+                    'error_msg': err_msg,
+                    'early_termination': early_termination,
                 }
                 results.append(eps_result)
-                fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
+                if err_msg is not None:
+                    fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}_error'
+                else:
+                    fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
                 with open(f'{result_dir}/{fname}.json', 'w') as f:
                     json.dump(eps_result, f)
                 if self.args.save_video:
@@ -505,7 +518,7 @@ if __name__ == "__main__":
         "--eval_eps_total_num",
         help="evaluate a subset of episodes",
         type=int,
-        default=1000,
+        default=200,
     )
 
     parser.add_argument(
@@ -590,10 +603,6 @@ if __name__ == "__main__":
     random.seed(seed)
     OmegaConf.set_readonly(config, False)
     config.habitat.seed = seed
-    if args.collect_data:
-        config.AGENT.IG_PLANNER.ig_predictor_type='rendering'
-        args.eval_policy = 'ur'
-
     if args.eval_policy == 'rl':
         config.AGENT.SKILLS.NAV_TO_OBJ.type = "rl"
     elif args.eval_policy == 'fbe':
@@ -604,7 +613,6 @@ if __name__ == "__main__":
         raise ValueError(f'Unknown policy type: {args.eval_policy}')
     config.GROUND_TRUTH_SEMANTICS = 1 if args.gt_semantic else 0
     config.habitat.simulator.habitat_sim_v0.allow_sliding=args.allow_sliding
-
     # if args.eval_policy == 'ur' and not args.no_use_prob_map and not args.gt_semantic:
     #     config.AGENT.SEMANTIC_MAP.use_probability_map = True
     # else:
@@ -616,6 +624,7 @@ if __name__ == "__main__":
     evaluator.eval(
         num_episodes_per_env=config.EVAL_VECTORIZED.num_episodes_per_env,
     )
+
 
 
 

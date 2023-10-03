@@ -98,6 +98,11 @@ class POLoMapState:
             device=self.device,
         )
 
+        self.hgoal_unreachable = torch.zeros(self.num_environments, 
+                                            self.global_map_size,
+                                            self.global_map_size,
+                                            device=self.device)
+        
         # Global and local (x, y, o) sensor pose
         # This is in the hab world frame (x: forward, y: left, z: up)  unit: meter
         # note: this is not the same as GPS
@@ -121,15 +126,13 @@ class POLoMapState:
         self.goal_map = np.zeros(
             (self.num_environments, self.local_map_size, self.local_map_size)
         )
-        self.frontier_map = np.zeros(
-            (self.num_environments, self.local_map_size, self.local_map_size)
-        )
+       
 
         self.prior = probability_prior
         self.prior_logit = torch.logit(torch.tensor(self.prior))
         self.local_coords = np.array([self.local_map_size // 2, self.local_map_size // 2])
 
-    
+
     def init_map_and_pose(self):
         """Initialize global and local map and sensor pose variables."""
         for e in range(self.num_environments):
@@ -158,14 +161,10 @@ class POLoMapState:
         self.global_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
         self.local_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
 
-    def update_frontier_map(self, e: int, frontier_map: np.ndarray):
-        """Update the current exploration frontier."""
-        self.frontier_map[e] = frontier_map
+        self.hgoal_unreachable[e] *= 0.0
+        
 
-    def get_frontier_map(self, e: int):
-        return self.frontier_map[e]
-
-    def update_global_goal_for_env(self, e: int, goal_map: np.ndarray):
+    def update_goal_for_env(self, e: int, goal_map: np.ndarray):
         """Update global goal for a specific environment with the goal action chosen
         by the policy.
 
@@ -181,6 +180,10 @@ class POLoMapState:
     def get_obstacle_map(self, e) -> np.ndarray:
         """Get local obstacle map for an environment."""
         return np.copy(self.local_map[e, MC.OBSTACLE_MAP, :, :].cpu().float().numpy())
+
+    def get_global_obstacle_map(self, e) -> np.ndarray:
+        """Get local obstacle map for an environment."""
+        return np.copy(self.global_map[e, MC.OBSTACLE_MAP, :, :].cpu().float().numpy())
 
     def get_explored_map(self, e) -> np.ndarray:
         """Get local explored map for an environment."""

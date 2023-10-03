@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from sklearn.cluster import DBSCAN
 
-from mapping.semantic.constants import MapConstants as MC
+from mapping.polo.constants import MapConstants as MC
 from home_robot.utils.morphology import binary_dilation
 
 

@@ -31,7 +31,7 @@ LABEL_MAP = {
     "sum_prob_map_ur": "UR",
     "ablation_argmax": "UR argmax",
 }
-EXP = ['video3_default_ur']
+EXP = ['refact_lambda_0.01','refact_lambda_0.005','refact_lambda_0.001']
 def summarize_result():
     
     exp_results = {}

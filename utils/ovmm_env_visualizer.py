@@ -336,6 +336,10 @@ class Visualizer:
 
                 if short_term_goal is not None:
                     short_term_goal_mask = np.zeros(goal_mask.shape)
+                    short_term_goal = list(short_term_goal)
+                    short_term_goal = pu.threshold_poses(
+                        short_term_goal, obstacle_map.shape
+                    )
                     short_term_goal_mask[short_term_goal[0], short_term_goal[1]] = 1
                     short_term_goal_mask = (
                         1

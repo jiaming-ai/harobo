@@ -98,10 +98,10 @@ def init_seed(seed):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/igp/default_config.yaml")
-    parser.add_argument("--gpu_id", type=int, default=3)
+    parser.add_argument("--gpu_id", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--exp_name", type=str, default="unet_c16_lossis1_dlis10_more")
-    parser.add_argument("--eval_only", action="store_true",default=True)
+    parser.add_argument("--exp_name", type=str, default="debug")
+    parser.add_argument("--eval_only", action="store_true",default=False)
     parser.add_argument("--options", type=str,default='') # "net.c0=8,..."
     
     args = parser.parse_args()
@@ -185,10 +185,11 @@ def train(args,config):
     for epoch in range(train_epoch_num):
         train_epoch(net,dataloader,optimizer, epoch, logger)
         with torch.no_grad():
-            loss = eval_epoch(net,dataloader_eval)
-        logger.add_scalar("eval/loss",loss,epoch)
-        if loss < best_loss:
-            best_loss = loss
+            mae,std = eval_epoch(net,dataloader_eval)
+        logger.add_scalar("eval/loss",mae,epoch)
+        logger.add_scalar("eval/loss_std",std,epoch)
+        if mae < best_loss:
+            best_loss = mae
             torch.save(net.state_dict(),f"{model_dir}/best.pth")
             print("Saved best model")
 
