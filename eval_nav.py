@@ -298,20 +298,20 @@ class InteractiveEvaluator():
             # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             start_time = time.time()
             err_msg = None
-            action, agent_info, _ = agent.act(ob)
-            # try:
-            #     action, agent_info, _ = agent.act(ob)
-            # except Exception as e:
-            #     err_msg = str(e)
-            #     action = DiscreteNavigationAction.STOP
-            #     print(f'Error: {err_msg}')
+            # action, agent_info, _ = agent.act(ob)
+            try:
+                action, agent_info, _ = agent.act(ob)
+            except Exception as e:
+                err_msg = str(e)
+                action = DiscreteNavigationAction.STOP
+                print(f'Error: {err_msg}')
             total_planning_time += time.time() - start_time
      
             if visualize:
                 early_termination = agent_info['early_termination']
                 exp_coverage_list.append(agent_info["exp_coverage"])
-                checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
-                    if len(checking_area_list) > 0 else agent_info["checking_area"])
+                # checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
+                #     if len(checking_area_list) > 0 else agent_info["checking_area"])
                 entropy_list.append(agent_info["entropy"])
                 close_coverage_list.append(agent_info["close_coverage"])
 

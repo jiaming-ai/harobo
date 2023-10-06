@@ -80,7 +80,7 @@ AGENT:
       min_joint_delta: 0.02
 
     PICK:
-      type: oracle
+      type: "heuristic" # or "hardcoded"
 
     NAV_TO_OBJ:
       type: heuristic # heuristic (default) or rl
@@ -144,7 +144,7 @@ AGENT:
 
 
     PLACE:
-      type: heuristic # "rl" or "heuristic" or "hardcoded"
+      type: "rl" # or "heuristic" or "hardcoded"
       checkpoint_path: data/checkpoints/ovmm_baseline_home_robot_challenge_2023/place.pth
       rl_config: configs/agent/place_rl.yaml # with continuous actions
       gym_obs_keys:
@@ -176,8 +176,8 @@ AGENT:
   skip_skills:
     nav_to_obj: False
     nav_to_rec: False
-    gaze_at_obj: False #True
-    gaze_at_rec: False #True
+    gaze_at_obj: True 
+    gaze_at_rec: True
     pick: False
     place: False
 
@@ -201,16 +201,17 @@ AGENT:
     goal_update_steps: 150 # controls how often to update the ur goal 
     max_num_changed_cells: 4000 # controls how often to update the ur goal based on the change in the map
     max_num_changed_promising_cells: 1000 # controls how often to update the ur goal based on the change in the map
-    info_gain_alpha: 3 # controls how much to weight the promising area in information gain computation
+    info_gain_alpha: 10 # controls how much to weight the promising area in information gain computation
     ur_obstacle_dialate_radius: 5 # dialate the obstacles when selecting the ur goal so that the robot doesn't get too close to the obstacles
     # ur_dist_obstacle_dialate_radius: 3 # dialate the obstacles when computing the distance to the ur goals
-    igp_model_dir: "data/checkpoints/igp/unet_c16_lossis1_dlis5_more"
-    util_lambda: 0.007 # controls how much to prioritize the ur goal close to the robot
+    igp_model_dir: "data/checkpoints/igp/unet_c16_lossis1_dlis5_more_more"
+    util_lambda: 0.0075 # controls how much to prioritize the ur goal close to the robot
     random_ur_goal: False # whether to use a random ur goal or not
     ig_predictor_type: 'oig' # ray_casting | rendering | argmax | oig 
     utility_exp: True # whether to use exponential function in the utility computation, if not, use inverse
     replan_ur_goal_if_stuck: True # whether to replan the ur goal if the robot is stuck
-
+    use_instance_based_goal_rec: True
+    
 EVAL_VECTORIZED:
   simulator_gpu_ids: [3] # IDs of GPUs to use for vectorized environments
   split: val                # eval split

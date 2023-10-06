@@ -36,7 +36,7 @@ from utils.visualization import (
 
 # For debugging input and output maps - shows matplotlib visuals
 debug_maps = False
-
+    
 
 class POLoMapModule(nn.Module):
     """
@@ -111,33 +111,6 @@ class POLoMapModule(nn.Module):
         """
         super().__init__()
 
-        # frame_height=config.ENVIRONMENT.frame_height,
-        # frame_width=config.ENVIRONMENT.frame_width,
-        # camera_height=config.ENVIRONMENT.camera_height,
-        # hfov=config.ENVIRONMENT.hfov,
-        # num_sem_categories=config.AGENT.SEMANTIC_MAP.num_sem_categories,
-        # map_size_cm=config.AGENT.SEMANTIC_MAP.map_size_cm,
-        # map_resolution=config.AGENT.SEMANTIC_MAP.map_resolution,
-        # vision_range=config.AGENT.SEMANTIC_MAP.vision_range,
-        # min_depth=config.ENVIRONMENT.min_depth,
-        # max_depth=config.ENVIRONMENT.max_depth,
-        # explored_radius=config.AGENT.SEMANTIC_MAP.explored_radius,
-        # been_close_to_radius=config.AGENT.SEMANTIC_MAP.been_close_to_radius,
-        # global_downscaling=config.AGENT.SEMANTIC_MAP.global_downscaling,
-        # du_scale=config.AGENT.SEMANTIC_MAP.du_scale,
-        # cat_pred_threshold=config.AGENT.SEMANTIC_MAP.cat_pred_threshold,
-        # exp_pred_threshold=config.AGENT.SEMANTIC_MAP.exp_pred_threshold,
-        # map_pred_threshold=config.AGENT.SEMANTIC_MAP.map_pred_threshold,
-        # must_explore_close=config.AGENT.SEMANTIC_MAP.must_explore_close,
-        # min_obs_height_cm=config.AGENT.SEMANTIC_MAP.min_obs_height_cm,
-        # dilate_obstacles=config.AGENT.SEMANTIC_MAP.dilate_obstacles,
-        # dilate_size=config.AGENT.SEMANTIC_MAP.dilate_size,
-        # dilate_iter=config.AGENT.SEMANTIC_MAP.dilate_iter,
-        # probabilistic=config.AGENT.SEMANTIC_MAP.use_probability_map,
-        # probability_prior=config.AGENT.SEMANTIC_MAP.probability_prior,
-        # close_range=config.AGENT.SEMANTIC_MAP.close_range,
-        # confident_threshold=config.AGENT.SEMANTIC_MAP.confident_threshold,
-
         self.screen_h = frame_height
         self.screen_w = frame_width
         self.camera_matrix = du.get_camera_matrix(self.screen_w, self.screen_h, hfov)
@@ -196,6 +169,8 @@ class POLoMapModule(nn.Module):
 
         self.close_range = close_range // self.xy_resolution # 150 cm
         self.confident_threshold = confident_threshold # above which considered a hard detection
+        self.confirm_detection_threashold = 0.5 # above which considered a detection
+        
         self.prior_logit = torch.logit(torch.tensor(probability_prior)) # prior probability of objects
         self.vr_matrix = torch.zeros((1, self.vision_range, self.vision_range))
         self.prior_matrix = torch.full((1, self.vision_range, self.vision_range), self.prior_logit)
@@ -208,34 +183,12 @@ class POLoMapModule(nn.Module):
         obs: Tensor,
         pose_delta: Tensor,
         camera_pose: Tensor,
-        local_map: Tensor,
-        local_pose: Tensor,
-        detection_results: Optional[List[Dict[str, Tensor]]] = None,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, IntTensor, Tensor]:
-        """Update maps and poses with a sequence of observations and generate map
-        features at each time step.
-
-        """
-        local_map_new, local_pose_new, extras = self._update_local_map_and_pose(
-                obs,
-                pose_delta,
-                local_map,
-                local_pose,
-                camera_pose,
-                detection_results,
-            )
-        
-        return local_map_new, local_pose_new, extras
-
-    def _update_local_map_and_pose(
-        self,
-        obs: Tensor,
-        pose_delta: Tensor,
         prev_map: Tensor,
         prev_pose: Tensor,
-        camera_pose: Tensor,
-        detection_result: Optional[Dict[str, Tensor]] = None,
-    ) -> Tuple[Tensor, Tensor]:
+        detection_results: Optional[List[Dict[str, Tensor]]] = None,
+        lmb: Tensor = None,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, IntTensor, Tensor]:
+  
         """Update local map and sensor pose given a new observation using parameter-free
         differentiable projective geometry.
 
@@ -315,19 +268,18 @@ class POLoMapModule(nn.Module):
 
         #################### prob features ####################
         
-        # xyz = point_cloud_base_coords.clone().reshape(batch_size,-1, 3)
-
         # we use the detection score as feat for point cloud
         # we assume total_num_instance is the same for all batch (padded with 0)
 
         # first take max prob value for pixel
         prob_feat = torch.zeros(batch_size, 1, h // self.du_scale * w // self.du_scale).to(device)
-        if detection_result is not None:
-            scores = detection_result["scores"] # [B, total_num_instance]
-            classes = detection_result["classes"] # [B, total_num_instance]
-            masks = detection_result["masks"].float() # [B, total_num_instance, H, W]
-            relevance = detection_result["relevance"] #torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
+        if detection_results is not None:
+            scores = detection_results["scores"] # [B, total_num_instance]
+            classes = detection_results["classes"] # [B, total_num_instance]
+            masks = detection_results["masks"].float() # [B, total_num_instance, H, W]
+            relevance = detection_results["relevance"] #torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
 
+            num_detected_instance = 0
             if masks.shape[1] != 0: # no instance detected
                 score_relevence = scores * relevance[classes] # [B, total_num_instance]
                 prob_feat = torch.einsum('bnhw,bn->bnhw',masks, score_relevence) # [B, N, H, W]
@@ -336,6 +288,19 @@ class POLoMapModule(nn.Module):
                 prob_feat = nn.MaxPool2d(self.du_scale)(prob_feat).view(
                         batch_size, 1,  h // self.du_scale * w // self.du_scale
                     ) # [B, 1,  H*W] after scaling
+
+                # TODO: work with vectorized version later
+                detect_idx = (scores[0] > self.confirm_detection_threashold) # [total_num_instance]
+                num_detected_instance = detect_idx.sum().item()
+                if num_detected_instance > 0:
+                    detected_instances_classes = classes[0][detect_idx] # [num_detected_instance]
+                    detected_instances_scores = scores[0][detect_idx] # [num_detected_instance]
+                    detected_instances_masks = masks[0][detect_idx] # [num_detected_instance, H, W]
+                    detected_instances_masks = detected_instances_masks.unsqueeze(0) # [1, num_detected_instance, H, W]
+                    detected_instances_masks = nn.MaxPool2d(self.du_scale)(detected_instances_masks).view(
+                        1, detected_instances_masks.shape[1],  h // self.du_scale * w // self.du_scale
+                    ) # [1, num_detected_instance,  H*W] after scaling
+            
         #################### prob features ####################
 
         point_cloud_map_coords = du.transform_pose_t(
@@ -351,8 +316,41 @@ class POLoMapModule(nn.Module):
                 orig=np.zeros(3),
             )
 
-        voxel_channels = 2 + self.num_sem_categories # first is for 3d structure, last is for prob feat
+        # voxel_channels = 2 + self.num_sem_categories # first is for 3d structure, last is for prob feat
         
+        # init_grid = torch.zeros(
+        #     batch_size,
+        #     voxel_channels,
+        #     self.vision_range,
+        #     self.vision_range,
+        #     self.max_voxel_height - self.min_voxel_height,
+        #     device=device,
+        #     dtype=torch.float32,
+        # )
+        # feat = torch.ones(
+        #     batch_size,
+        #     voxel_channels-1, # cat + prob
+        #     self.screen_h // self.du_scale * self.screen_w // self.du_scale,
+        #     device=device,
+        #     dtype=torch.float32,
+        # )
+
+        # feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(obs[:, 4:, :, :]).view(
+        #     batch_size, obs_channels - 4, h // self.du_scale * w // self.du_scale
+        # )
+
+        # ------------more channels-------------
+        feat_all_points_channel = 1
+        feat_ob_channel = feat_all_points_channel + obs_channels - 4
+        feat_prob_channel = feat_ob_channel + 1
+        if num_detected_instance > 0:
+
+            feat_instance_channel = feat_prob_channel + num_detected_instance
+            voxel_channels = feat_instance_channel  # first is for 3d structure, last is for prob feat
+        
+        else:
+            voxel_channels = feat_prob_channel # first is for 3d structure, last is for prob feat
+            
         init_grid = torch.zeros(
             batch_size,
             voxel_channels,
@@ -364,24 +362,28 @@ class POLoMapModule(nn.Module):
         )
         feat = torch.ones(
             batch_size,
-            voxel_channels-1, # cat + prob
+            voxel_channels, 
             self.screen_h // self.du_scale * self.screen_w // self.du_scale,
             device=device,
             dtype=torch.float32,
         )
 
-        # PMO
-        # if num_instance > 0:
-        #     feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(masks).view(
-        #         batch_size, num_instance, h // self.du_scale * w // self.du_scale
-        #     )
-
-        # feat: 0 is for explored area, 1:-1 is for instance, -1 is for prob
-        feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(obs[:, 4:, :, :]).view(
+        feat[:, 1:feat_ob_channel, :] = nn.AvgPool2d(self.du_scale)(obs[:, 4:, :, :]).view(
             batch_size, obs_channels - 4, h // self.du_scale * w // self.du_scale
         )
-        feat = torch.cat([feat,prob_feat],dim=1)
+        feat[:, feat_ob_channel:feat_prob_channel, :] = prob_feat
 
+        if num_detected_instance > 0:
+            feat[:, feat_prob_channel:feat_instance_channel, :] = detected_instances_masks
+                
+            
+        # total feat channel num = 
+        #   feat_all_points_channel_num (all points) +
+        #   feat_ob_channel_num (original feats) +
+        #   feat_prob_channel_num (prob feat) +
+        #   feat_instance_channel_num (instance feat)
+        # ----------------------------
+        
         XYZ_cm_std = point_cloud_map_coords.float()
         XYZ_cm_std[..., :2] = XYZ_cm_std[..., :2] / self.xy_resolution
         XYZ_cm_std[..., :2] = (
@@ -426,50 +428,7 @@ class POLoMapModule(nn.Module):
         
         ################ probabilitic ################
         
-        ############ PMO ##############
-        # # TODO filter out voxels that are lower than the threshold
-        # # this is based on the assumption that the object should not be on the ground
-        # instance_projection = voxels[:, 1:, :, :,
-        #      self.min_mapped_height + 4 : self.max_mapped_height
-        # ].sum(4) # [B, total_num_instance, H, W]
-
-        # ### We need to pad the instances to the same size
-        # probs = torch.zeros([batch_size, 
-        #                         self.num_sem_categories,
-        #                         self.vision_range,
-        #                         self.vision_range], 
-        #                         dtype=torch.float32,
-        #                         device=device)
-        
-        # for c in [1,2,3]: # obj, rec, goal_rec
-        #     idx_b, idx_c = torch.where(classes==c) 
-        #     if len(idx_b) == 0: # no detection for all batches
-        #         continue
-
-        #     # combine the instances from the same class by taking the max
-        #     instances_list = instance_projection[[idx_b, idx_c]].clamp(0,1) # [c_total_num_instance, H, W]
-        #     instances_list *= scores[[idx_b, idx_c]].unsqueeze(-1).unsqueeze(-1) # [c_total_num_instance, H, W]
-        #     idx_b_list = idx_b.tolist()
-        #     part_sizes = [idx_b_list.count(i) for i in range(batch_size)]
-
-        #     instances_list = torch.split(instances_list, part_sizes, dim=0)
-        #     instances_tensor = pad_sequence(instances_list, batch_first=True) # [B, c_num_instance, H, W]
-        #     combined, _ = torch.max(instances_tensor, dim=1)   # [B, H, W]
-
-        #     probs[:, c, :, :] = combined
-
-        # # assign hard detection results
-        # detected = probs > self.confident_threshold
-
-        # # relevance = torch.tensor([0, 1, 0.7 , 0, 0]).to(device)
-        # prob_map = torch.einsum('bchw,c->bhw',probs,relevance) # [B, H, W]
-
-        # # we only reduce the probablities for the close range that is viewable by the agent
-        # # prior_matrix = self.prior_matrix.repeat(batch_size, 1, 1) # [B, H, W]
-        # # prior_matrix[fp_exp_pred.squeeze(1) > 0] = self.prior_logit # [B, H, W]
-
-        ########### end PMO ###################
-        prob_map, _ = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
+        prob_map, _ = voxels[:,feat_prob_channel-1,:,:,self.filtered_min_height : self.max_mapped_height].max(3)
         # prob_map = voxels[:,-1,:,:,self.filtered_min_height : self.max_mapped_height].sum(3)
 
         # TODO: should we use close_range or exp, or just all viewable area?
@@ -498,22 +457,6 @@ class POLoMapModule(nn.Module):
             fp_map_pred =  torch.nn.functional.conv2d(
                 fp_map_pred, self.dialate_kernel.to(device), padding=self.dilate_size // 2
             ).clamp(0, 1)
-            # for i in range(fp_map_pred.shape[0]):
-            #     env_map = fp_map_pred[i, 0].cpu().numpy()
-            #     # TODO: remove if not used
-            #     # env_map_eroded = cv2.erode(
-            #     #     env_map, self.dilate_kernel, self.dilate_iter
-            #     # )
-            #     # filt = cv2.filter2D(env_map, -1, self.dilate_kernel)
-            #     median_filtered = cv2.medianBlur(env_map, self.dilate_size)
-
-            #     # TODO: remove debug code
-            #     # plt.subplot(121); plt.imshow(env_map)
-            #     # plt.subplot(122); plt.imshow(env_map_eroded)
-            #     # plt.show()
-            #     # breakpoint()
-            #     # fp_map_pred[i, 0] = torch.tensor(env_map_eroded)
-            #     fp_map_pred[i, 0] = torch.tensor(median_filtered)
 
         x1 = self.local_map_size_cm // (self.xy_resolution * 2) - self.vision_range // 2
         x2 = x1 + self.vision_range
@@ -523,25 +466,16 @@ class POLoMapModule(nn.Module):
         agent_view[:, MC.EXPLORED_MAP : MC.EXPLORED_MAP + 1, y1:y2, x1:x2] = fp_exp_pred
         agent_view[:, MC.BEEN_CLOSE_MAP : MC.BEEN_CLOSE_MAP + 1, y1:y2, x1:x2] = close_exp
         agent_view[:, MC.PROBABILITY_MAP , y1:y2, x1:x2] = prob_logit
-        agent_view[:, MC.VOXEL_START: MC.NON_SEM_CHANNELS, y1:y2, x1:x2] = voxels[:,-1,:,:,
+        agent_view[:, MC.VOXEL_START: MC.NON_SEM_CHANNELS, y1:y2, x1:x2] = voxels[:,feat_prob_channel-1,:,:,
             : self.max_mapped_height
         ].permute(0,3,1,2) # [B, H, W, C] -> [B, C, H, W]
         
-        # PMO
-        # agent_view[
-        #     :,
-        #     MC.NON_SEM_CHANNELS : MC.NON_SEM_CHANNELS + self.num_sem_categories,
-        #     y1:y2,
-        #     x1:x2,
-        # ] = (
-        #     detected
-        #     / self.cat_pred_threshold
-        # )
+        # original feats
         agent_view[:, MC.NON_SEM_CHANNELS :, y1:y2, x1:x2] = (
-            filtered_height_proj[:, 1:-1] / self.cat_pred_threshold
+            filtered_height_proj[:, 1:feat_ob_channel] / self.cat_pred_threshold
         )
         
-        #### for voxel ####
+        #### load channels for 3D occupancy and instance detection ####
         occupaid_voxel = torch.zeros(
             batch_size,
             self.max_mapped_height,
@@ -552,7 +486,21 @@ class POLoMapModule(nn.Module):
         )
             
         occupaid_voxel[..., y1:y2, x1:x2] = voxels[:,0,:,:, : self.max_mapped_height].permute(0,3,1,2)
-        agent_view = torch.cat([agent_view, occupaid_voxel], dim=1)
+        
+        if num_detected_instance > 0:
+            instances = torch.zeros(
+                batch_size,
+                num_detected_instance,
+                self.local_map_size_cm // self.xy_resolution,
+                self.local_map_size_cm // self.xy_resolution,
+                device=device,
+                dtype=dtype,
+            )
+            instances[..., y1:y2, x1:x2] = filtered_height_proj[:,feat_prob_channel:feat_instance_channel] # [B, N, H, W]
+            
+            agent_view = torch.cat([agent_view, occupaid_voxel, instances], dim=1)
+        else:
+            agent_view = torch.cat([agent_view, occupaid_voxel], dim=1)
         ####################
         
         current_pose = pu.get_new_pose_batch(prev_pose.clone(), pose_delta)
@@ -572,11 +520,45 @@ class POLoMapModule(nn.Module):
         translated = F.grid_sample(rotated, trans_mat, align_corners=True)
 
         
-        #### for voxel ####
-        occupaid_voxel_st = translated[:,MC.NON_SEM_CHANNELS+self.num_sem_categories:,:,:]
-        translated = translated[:,:MC.NON_SEM_CHANNELS+self.num_sem_categories,:,:]
+        #### unload channels for 3D occupancy and instance detection ####
+        ori_channel_num = MC.NON_SEM_CHANNELS + self.num_sem_categories
+        occupaid_voxel_st = translated[:,ori_channel_num:ori_channel_num+self.max_mapped_height,:,:]
+        if num_detected_instance > 0:
+            instances_st = translated[:,ori_channel_num+self.max_mapped_height:,:,:] # [B, N, H, W]
+        translated = translated[:,:ori_channel_num,:,:]
         ####################
 
+        # --------------- process instances maps ----------------
+        instances_dict = None
+        if num_detected_instance > 0:
+            
+            # get bounding box for each instance
+            # TODO: currently assumes batch size = 1
+            instances_dict = {k:[] for k in range(self.num_sem_categories)}
+            
+            for i in range(num_detected_instance):
+                ins_mask = instances_st[0,i,:,:].nonzero()
+                if ins_mask.shape[0] > 0:
+
+                    x1 = ins_mask[:,0].min().item()
+                    x2 = ins_mask[:,0].max().item()
+                    y1 = ins_mask[:,1].min().item()
+                    y2 = ins_mask[:,1].max().item()
+                    bb = np.array([x1, x2, y1, y2]) + lmb[0][[0,0,2,2]].cpu().numpy() # convert to global map coordinates 
+                    center = np.array([(x1+x2)/2, (y1+y2)/2]) + lmb[0][[0,2]].cpu().numpy() # convert to global map coordinates
+
+                    ins_obj = {
+                        "bb": bb,
+                        "center": center,
+                        "score": detected_instances_scores[i].item(),
+                        "class": detected_instances_classes[i].item(),
+                    }             
+                    instances_dict[detected_instances_classes[i].item()].append(ins_obj)
+
+                    
+        # --------------- end process instances maps ----------------
+        
+        
         # Clamp to [0, 1] after transform agent view to map coordinates
         idx_no_prob = list(range(0,MC.PROBABILITY_MAP)) + \
                     list(range(MC.NON_SEM_CHANNELS, MC.NON_SEM_CHANNELS+self.num_sem_categories))
@@ -597,13 +579,15 @@ class POLoMapModule(nn.Module):
         # If we don't go to goal, then most likely the object is not the goal object on the specified receptacle
         
         # only for evaluation
-        checking_area = (translated[:, MC.BEEN_CLOSE_MAP] == 1) \
-                    & (current_map[:, MC.PROBABILITY_MAP] > self.prior_logit) \
-                    & (prev_map[:, MC.BEEN_CLOSE_MAP] != 1) # only check the area that we have not been close to, to avoid repeated checking
-        checking_area = checking_area.sum(dim=(1,2)).cpu().numpy() * self.resolution * self.resolution / 10000 # m^2
-        extras = {
-            "checking_area": checking_area, # ndarray of size [B]
-        }
+        # checking_area = (translated[:, MC.BEEN_CLOSE_MAP] == 1) \
+        #             & (current_map[:, MC.PROBABILITY_MAP] > self.prior_logit) \
+        #             & (prev_map[:, MC.BEEN_CLOSE_MAP] != 1) # only check the area that we have not been close to, to avoid repeated checking
+        # checking_area = checking_area.sum(dim=(1,2)).cpu().numpy() * self.resolution * self.resolution / 10000 # m^2
+        
+        # extras = {
+        #     "checking_area": checking_area, # ndarray of size [B]
+        # }
+
         # if been close to and the prob is very low
         # NOTE: however, this doesn't work well, because the prob can be hight for a recepticle
         # and make the agent repeatively checking the recepticle. We need to have different prob 
@@ -671,7 +655,7 @@ class POLoMapModule(nn.Module):
         # Reset current location
         # TODO: it is always in the center, do we need it?
         current_map[:, MC.CURRENT_LOCATION, :, :].fill_(0.0)
-        curr_loc = current_pose[:, :2] # 245, 240 
+        curr_loc = current_pose[:, :2] 
         curr_loc = (curr_loc * 100.0 / self.xy_resolution).int()
 
         for e in range(batch_size):
@@ -683,88 +667,7 @@ class POLoMapModule(nn.Module):
                 x - 2 : x + 3,
             ].fill_(1.0)
 
-            # Set a disk around the agent to explored
-            # This is around the current agent - we just sort of assume we know where we are
-            # TODO being close to should be in the agent's camera frustum and within a certain distance
-            # try:
-            #     radius = 10
-            #     explored_disk = torch.from_numpy(skimage.morphology.disk(radius))
-            #     current_map[
-            #         e,
-            #         MC.EXPLORED_MAP,
-            #         y - radius : y + radius + 1,
-            #         x - radius : x + radius + 1,
-            #     ][explored_disk == 1] = 1
-            #     # Record the region the agent has been close to using a disc centered at the agent
-            #     radius = self.been_close_to_radius // self.resolution
-            #     been_close_disk = torch.from_numpy(skimage.morphology.disk(radius))
-            #     current_map[
-            #         e,
-            #         MC.BEEN_CLOSE_MAP,
-            #         y - radius : y + radius + 1,
-            #         x - radius : x + radius + 1,
-            #     ][been_close_disk == 1] = 1
-            # except IndexError:
-            #     pass
-
-        if debug_maps:
-            current_map = current_map.cpu()
-            explored = current_map[0, MC.EXPLORED_MAP].numpy()
-            been_close = current_map[0, MC.BEEN_CLOSE_MAP].numpy()
-            obstacles = current_map[0, MC.OBSTACLE_MAP].numpy()
-            plt.subplot(331)
-            plt.axis("off")
-            plt.title("explored")
-            plt.imshow(explored)
-            plt.subplot(332)
-            plt.axis("off")
-            plt.title("been close")
-            plt.imshow(been_close)
-            plt.subplot(233)
-            plt.axis("off")
-            plt.imshow(been_close * explored)
-            plt.subplot(334)
-            plt.axis("off")
-            plt.title("obstacles")
-            plt.imshow(obstacles)
-            plt.subplot(335)
-            plt.axis("off")
-            plt.title("obstacles_eroded")
-
-            obs_eroded = cv2.erode(obstacles, np.ones((5, 5)), iterations=5)
-            plt.imshow(obs_eroded)
-            plt.subplot(336)
-            plt.axis("off")
-            plt.imshow(been_close * obstacles)
-            plt.subplot(337)
-            plt.axis("off")
-            rgb = obs[0, :3, :: self.du_scale, :: self.du_scale].permute(1, 2, 0)
-            plt.imshow(rgb.cpu().numpy())
-            plt.subplot(338)
-            plt.imshow(depth[0].cpu().numpy())
-            plt.axis("off")
-            plt.subplot(339)
-            seg = np.zeros_like(depth[0].cpu().numpy())
-            for i in range(4, obs_channels):
-                seg += (i - 4) * obs[0, i].cpu().numpy()
-                print("class =", i, np.sum(obs[0, i].cpu().numpy()), "pts")
-            plt.imshow(seg)
-            plt.axis("off")
-            plt.show()
-
-            print("Non semantic channels =", MC.NON_SEM_CHANNELS)
-            print("map shape =", current_map.shape)
-            breakpoint()
-
-        # if self.must_explore_close:
-        #     current_map[:, MC.EXPLORED_MAP] = (
-        #         current_map[:, MC.EXPLORED_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
-        #     )
-        #     current_map[:, MC.OBSTACLE_MAP] = (
-        #         current_map[:, MC.OBSTACLE_MAP] * current_map[:, MC.BEEN_CLOSE_MAP]
-        #     )
-
-        return current_map, current_pose, extras
+        return current_map, current_pose, instances_dict
 
     def _update_global_map_and_pose_for_env(
         self,

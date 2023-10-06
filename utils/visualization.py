@@ -92,7 +92,10 @@ def plot_multiple_images(images,row=1):
     _, axes = plt.subplots(row, col, figsize=(12, 18))
     for i in range(row):
         for j in range(col):
-            axes[i,j].imshow(images[i*col+j].cpu().detach().numpy())
+            np_img = images[i*col+j]
+            if isinstance(np_img, torch.Tensor):
+                np_img = np_img.cpu().detach().numpy()
+            axes[i,j].imshow(np_img)
     plt.show()
 
 def display_grayscale(image):
@@ -413,7 +416,7 @@ def show_voxel_with_prob(voxel_tensor):
         voxel_tensor = voxel_tensor[0]
     
     voxel = voxel_tensor.permute(2,1,0) # in hab world frame (x: forward, y: left, z: up)
-    idx = torch.nonzero(~voxel.isinf()) # [N, 3]
+    idx = torch.nonzero(~torch.logical_or(voxel.isinf(),voxel==-1)) # [N, 3]
     feat = voxel[idx[:,0], idx[:,1], idx[:,2]].unsqueeze(1) # [N, 1]
     pc = idx.float() # [N, 3]
     # pc[:,:2] -= self.global_map_size / 2 

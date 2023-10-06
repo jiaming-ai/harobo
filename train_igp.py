@@ -26,9 +26,9 @@ from utils.visualization import (
 import os
 DEBUG = os.environ.get("DEBUG", 0)
 DEBUG = int(DEBUG)
-DEBUG = False
+# DEBUG = False
 
-def vis(voxel,pred,gt):
+def process_pred(voxel,pred):
     voxel = voxel[0].cpu().detach()
     pred = pred[0].cpu().detach()
     obstacle_height = 2
@@ -40,7 +40,13 @@ def vis(voxel,pred,gt):
     c_map[occ_map] = 0
     i_map[~exp_map] = 0
     i_map[occ_map] = 0
-
+    return c_map,i_map
+def vis(voxel,pred,gt):
+    c_map,i_map = process_pred(voxel,pred)
+    c_map = c_map.numpy()
+    c_map = np.flipud(c_map)
+    i_map = i_map.numpy()
+    i_map = np.flipud(i_map)
     images = [c_map,i_map,gt[0,0],gt[0,1]]
     plot_multiple_images(images,2)
     voxel[voxel==-1] = torch.inf
@@ -74,8 +80,11 @@ def eval_epoch(net,dataloader):
         voxel, info_map = batch
         pred = net(voxel)
         if DEBUG:
-            if (info_map[0,1] > 1).sum() > 0:
-                vis(voxel,pred,info_map)
+            # if (pred[0,1] > 2.5).sum() > 100 and voxel.max()<0.1:
+            #     c_map,i_map = process_pred(voxel,pred)
+            #     if (i_map>0.5).sum() > 100:
+            #         vis(voxel,pred,info_map)
+            vis(voxel,pred,info_map)
         loss = net.loss(pred,info_map,reduction='none')
         all_loss.extend(loss.tolist())
 
@@ -100,7 +109,7 @@ def main():
     parser.add_argument("--config", type=str, default="configs/igp/default_config.yaml")
     parser.add_argument("--gpu_id", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--exp_name", type=str, default="debug")
+    parser.add_argument("--exp_name", type=str, default="unet_c16_lossis1_dlis5_more_more")
     parser.add_argument("--eval_only", action="store_true",default=False)
     parser.add_argument("--options", type=str,default='') # "net.c0=8,..."
     

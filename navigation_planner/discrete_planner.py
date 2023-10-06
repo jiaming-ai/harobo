@@ -133,9 +133,13 @@ class DiscretePlanner:
         self.last_lmb = None
         self.dd_planner = None
         self.navigable_goal_map = None
-        self.max_goal_distance_cm = 80 
+        self.init_max_goal_distance_cm = 80
+        self.high_goal_tolerance = 4 # 25 cm
+        self.max_goal_distance_cm = self.init_max_goal_distance_cm 
         self.last_rid = None
-        
+        self.past_poses = []
+        self.last_step_getting_out = False
+
     def reset(self):
         self.vis_dir = self.default_vis_dir
         self.collision_map = np.zeros(self.map_shape)
@@ -163,9 +167,29 @@ class DiscretePlanner:
         self.last_lmb = [240,720,240,720]
         self.dd_planner = None
         self.navigable_goal_map = None
-        self.high_goal_tolerance = 4 # 25 cm
-        self.max_goal_distance_cm = 80 # 80 cm
+        self.max_goal_distance_cm = self.init_max_goal_distance_cm # 80 cm # init max goal distance
         self.last_rid = None
+        self.past_poses = []
+        self.last_step_getting_out = False
+        
+    def reset_for_rec(self):
+        """
+        partially reset to navigate to the end receptacle in the same map
+        """
+        self.curr_obs_dilation_selem_radius = self.start_obs_dilation_selem_radius
+        self.obs_dilation_selem = skimage.morphology.disk(
+            self.curr_obs_dilation_selem_radius
+        )
+        # self.init_min_goal_distance_cm = 50 # reduce the min goal distance since receptacle is not within obstacles
+        self.cur_min_goal_distance_cm = self.init_min_goal_distance_cm
+        self.stuck_count = 0
+        self.dd_planner = None
+        self.navigable_goal_map = None
+        self.max_goal_distance_cm = self.init_max_goal_distance_cm # 80 cm
+        
+        self.last_rid = None
+        self.past_poses = []
+        self.last_step_getting_out = False
         
     def set_vis_dir(self, scene_id: str, episode_id: str):
         self.vis_dir = os.path.join(self.default_vis_dir, f"{scene_id}_{episode_id}")
@@ -289,11 +313,12 @@ class DiscretePlanner:
             # collision is only checked when the agent is moving
             # stuck can  happen even when the agent is not moving
             # this is to get the agent out of stuck
-            if np.allclose(self.last_pose, self.curr_pose):
+            travel_dist = np.linalg.norm(np.array(self.last_pose[:2])-np.array(self.curr_pose[:2]))
+            if travel_dist < 0.15:
                 self.stuck_count += 1
 
             # clear the stuck count if the agent is moving
-            else:
+            elif travel_dist > 0.2:
                 self.stuck_count = 0
 
         # low level stuck get out
@@ -482,7 +507,13 @@ class DiscretePlanner:
                 
             )
         self.last_action = action
-
+        self.last_step_getting_out = getting_out
+        
+        if self.stuck_count > 20:
+            action = DiscreteNavigationAction.STOP
+            end_episode = True
+            print("Warning: agent is stuck, stop the episode")
+        
         ret = {
             "action": action,
             "short_term_goal": short_term_goal,
@@ -507,7 +538,7 @@ class DiscretePlanner:
         agent_map = np.zeros_like(obstacle_map,dtype=bool)
 
 
-        while True:
+        while agent_rad < 10:
             agent_rad += 1
             agent_map[
                 int(start[0]) - agent_rad : int(start[0]) + agent_rad + 1,
@@ -643,17 +674,19 @@ class DiscretePlanner:
              the goal
             stop: binary flag to indicate we've reached the goal
         """
+        gx1, gx2, gy1, gy2 = planning_window
         goal_distance_map, closest_goal_pt = None, None
         # Dilate obstacles, we need this for visualization,
         # move this inside the if can speed up
         dilated_obstacles = cv2.dilate(obstacle_map, self.obs_dilation_selem, iterations=1)
+        dilated_obstacles[self.collision_map[gx1:gx2, gy1:gy2] == 1] = 1
+        dilated_obstacles[self.visited_map[gx1:gx2, gy1:gy2] == 1] = 0
 
-        gx1, gx2, gy1, gy2 = planning_window
 
         # Create inverse map of obstacles - this is territory we assume is traversible
         # Traversible is now the map
         traversible = 1 - dilated_obstacles
-        traversible[self.collision_map[gx1:gx2, gy1:gy2] == 1] = 0
+        # traversible[self.collision_map[gx1:gx2, gy1:gy2] == 1] = 0
 
         agent_rad = self.agent_cell_radius
 
@@ -663,9 +696,9 @@ class DiscretePlanner:
             int(start[1]) - agent_rad : int(start[1]) + agent_rad + 1,
         ] = 1
             
-        traversible[self.visited_map[gx1:gx2, gy1:gy2] == 1] = 1
+        # traversible[self.visited_map[gx1:gx2, gy1:gy2] == 1] = 1
 
-        traversible = add_boundary(traversible)
+        traversible = add_boundary(traversible,value=0)
         goal_map = add_boundary(goal_map, value=0)
 
         self.dd_planner = FMMPlanner(
@@ -681,9 +714,8 @@ class DiscretePlanner:
         # we should gradually increase the goal distance, when short term goal is not reachable
         # (or replan is true)
         # we only do this for object goal, not for ur goal
-        max_goal_distance_cm = self.max_goal_distance_cm
             
-        while self.cur_min_goal_distance_cm <= max_goal_distance_cm:
+        while self.cur_min_goal_distance_cm <= self.max_goal_distance_cm:
             # TODO: we can transform the previous goal map to avoid re computing the goal map
             if update_goal_map or self.navigable_goal_map is None:
                 navigable_goal_map = self.dd_planner._find_within_distance_to_multi_goal(
@@ -724,7 +756,7 @@ class DiscretePlanner:
             else:
                 break
         # no path can be found even with the largest goal distance
-        if self.cur_min_goal_distance_cm > max_goal_distance_cm:
+        if self.cur_min_goal_distance_cm > self.max_goal_distance_cm:
             no_path_found = True
             print("Cannot find a path to the goal even with the largest goal distance")
             return None, None, no_path_found, None, None, None, None

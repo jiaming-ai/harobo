@@ -1,6 +1,5 @@
-# Adapted from https://github.com/facebookresearch/home-robot
 
-from datetime import datetime
+
 from enum import IntEnum, auto
 from typing import Any, Dict, Optional, Tuple
 
@@ -35,6 +34,7 @@ class Skill(IntEnum):
 class SemanticVocab(IntEnum):
     FULL = auto()
     SIMPLE = auto()
+    ALL = auto()
 
 
 def get_skill_as_one_hot_dict(curr_skill: Skill):
@@ -43,11 +43,11 @@ def get_skill_as_one_hot_dict(curr_skill: Skill):
     return skill_dict
 
 
-class OVMMAgent(ObjectNavAgent):
-    """Uncertainty Reduction Agent (UR) for ObjectNav task."""
+class OpenVocabManipAgent(ObjectNavAgent):
+    """Simple object nav agent based on a 2D semantic map."""
 
-    def __init__(self, config, device_id: int = 0, obs_spaces=None, action_spaces=None, **kwargs):
-        super().__init__(config, device_id=device_id, **kwargs)
+    def __init__(self, config, device_id: int = 0):
+        super().__init__(config, device_id=device_id)
         self.states = None
         self.place_start_step = None
         self.pick_start_step = None
@@ -60,77 +60,88 @@ class OVMMAgent(ObjectNavAgent):
         self.nav_to_rec_agent = None
         self.pick_agent = None
         self.place_agent = None
+        self.pick_policy = None
+        self.place_policy = None
         self.semantic_sensor = None
+
+        if config.GROUND_TRUTH_SEMANTICS == 1 and self.store_all_categories_in_map:
+            # currently we get ground truth semantics of only the target object category and all scene receptacles from the simulator
+            raise NotImplementedError
+
         self.skip_skills = config.AGENT.skip_skills
         self.max_pick_attempts = 10
-
-        # always use detic to visualize
-        self.semantic_sensor = OvmmPerception(config, device_id)
-        self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(
-            config.ENVIRONMENT.category_map_file
-        )
+        if config.GROUND_TRUTH_SEMANTICS == 0:
+            self.semantic_sensor = OvmmPerception(config, device_id, self.verbose)
+            self.obj_name_to_id, self.rec_name_to_id = read_category_map_file(
+                config.ENVIRONMENT.category_map_file
+            )
         if config.AGENT.SKILLS.PICK.type == "heuristic" and not self.skip_skills.pick:
-            self.pick_policy = HeuristicPickPolicy(config, self.device)
+            self.pick_policy = HeuristicPickPolicy(
+                config, self.device, verbose=self.verbose
+            )
         if config.AGENT.SKILLS.PLACE.type == "heuristic" and not self.skip_skills.place:
-            self.place_policy = HeuristicPlacePolicy(config, self.device)
+            self.place_policy = HeuristicPlacePolicy(
+                config, self.device, verbose=self.verbose
+            )
         elif config.AGENT.SKILLS.PLACE.type == "rl" and not self.skip_skills.place:
+            from home_robot.agent.ovmm_agent.ppo_agent import PPOAgent
+
             self.place_agent = PPOAgent(
                 config,
                 config.AGENT.SKILLS.PLACE,
                 device_id=device_id,
-                obs_spaces=None,
-                action_spaces=None,
             )
         skip_both_gaze = self.skip_skills.gaze_at_obj and self.skip_skills.gaze_at_rec
         if config.AGENT.SKILLS.GAZE_OBJ.type == "rl" and not skip_both_gaze:
+            from home_robot.agent.ovmm_agent.ppo_agent import PPOAgent
+
             self.gaze_agent = PPOAgent(
                 config,
                 config.AGENT.SKILLS.GAZE_OBJ,
                 device_id=device_id,
-                obs_spaces=None,
-                action_spaces=None,
             )
-        print(f'loadding ppo agent for gaze at obj done')
         if (
             config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
             and not self.skip_skills.nav_to_obj
         ):
-            print(f'loadding ppo agent for nav to obj')
+            from home_robot.agent.ovmm_agent.ppo_agent import PPOAgent
+
             self.nav_to_obj_agent = PPOAgent(
                 config,
                 config.AGENT.SKILLS.NAV_TO_OBJ,
                 device_id=device_id,
-                obs_spaces=None,
-                action_spaces=None,
             )
-            print(f'loadding ppo agent for nav to obj done')
         if (
             config.AGENT.SKILLS.NAV_TO_REC.type == "rl"
             and not self.skip_skills.nav_to_rec
         ):
+            from home_robot.agent.ovmm_agent.ppo_agent import PPOAgent
+
             self.nav_to_rec_agent = PPOAgent(
                 config,
                 config.AGENT.SKILLS.NAV_TO_REC,
                 device_id=device_id,
-                obs_spaces=None,
-                action_spaces=None,
             )
-        self._fall_wait_steps = config.AGENT.fall_wait_steps
+        self._fall_wait_steps = getattr(config.AGENT, "fall_wait_steps", 0)
         self.config = config
 
     def _get_info(self, obs: Observations) -> Dict[str, torch.Tensor]:
         """Get inputs for visual skill."""
+        use_detic_viz = self.config.ENVIRONMENT.use_detic_viz
 
-        if self.config.GROUND_TRUTH_SEMANTICS == 1:
-            semantic_category_mapping = None  # THIS DOES NOT WORK
+        if self.config.GROUND_TRUTH_SEMANTICS == 1 or use_detic_viz:
+            semantic_category_mapping = None  # Visualizer handles mapping
         elif self.semantic_sensor.current_vocabulary_id == SemanticVocab.SIMPLE:
             semantic_category_mapping = RearrangeBasicCategories()
         else:
             semantic_category_mapping = self.semantic_sensor.current_vocabulary
 
-        semantic_frame = np.concatenate(
-            [obs.rgb, obs.semantic[:, :, np.newaxis]], axis=2
-        ).astype(np.uint8)
+        if use_detic_viz:
+            semantic_frame = obs.task_observations["semantic_frame"]
+        else:
+            semantic_frame = np.concatenate(
+                [obs.rgb, obs.semantic[:, :, np.newaxis]], axis=2
+            ).astype(np.uint8)
 
         info = {
             "semantic_frame": semantic_frame,
@@ -145,18 +156,14 @@ class OVMMAgent(ObjectNavAgent):
         info = {**info, **get_skill_as_one_hot_dict(self.states[0].item())}
         return info
 
-    def reset_vectorized(self, episodes=None):
+    def reset(self):
         """Initialize agent state."""
-        super().reset_vectorized(episodes)
+        self.reset_vectorized()
 
-        if episodes is None:
-            now = datetime.now()
-            self.planner.set_vis_dir("real_world", now.strftime("%Y_%m_%d_%H_%M_%S"))
-        else:
-            self.planner.set_vis_dir(
-                episodes[0].scene_id.split("/")[-1].split(".")[0],
-                episodes[0].episode_id,
-            )
+    def reset_vectorized(self):
+        """Initialize agent state."""
+        super().reset_vectorized()
+
         if self.gaze_agent is not None:
             self.gaze_agent.reset_vectorized()
         if self.nav_to_obj_agent is not None:
@@ -173,11 +180,15 @@ class OVMMAgent(ObjectNavAgent):
         self.fall_wait_start_step = torch.tensor([0] * self.num_environments)
         self.is_gaze_done = torch.tensor([0] * self.num_environments)
         self.place_done = torch.tensor([0] * self.num_environments)
+        if self.place_policy is not None:
+            self.place_policy.reset()
+        if self.pick_policy is not None:
+            self.pick_policy.reset()
 
     def get_nav_to_recep(self):
         return (self.states == Skill.NAV_TO_REC).float().to(device=self.device)
 
-    def reset_vectorized_for_env(self, e: int, episode):
+    def reset_vectorized_for_env(self, e: int):
         """Initialize agent state for a specific environment."""
         self.states[e] = Skill.NAV_TO_OBJ
         self.place_start_step[e] = 0
@@ -186,14 +197,11 @@ class OVMMAgent(ObjectNavAgent):
         self.fall_wait_start_step[e] = 0
         self.is_gaze_done[e] = 0
         self.place_done[e] = 0
-        if self.config.AGENT.SKILLS.PLACE.type == "heuristic":
+        if self.place_policy is not None:
             self.place_policy.reset()
-        if self.config.AGENT.SKILLS.PICK.type == "heuristic":
+        if self.pick_policy is not None:
             self.pick_policy.reset()
-        super().reset_vectorized_for_env(e, episode)
-        self.planner.set_vis_dir(
-            episode.scene_id.split("/")[-1].split(".")[0], episode.episode_id
-        )
+        super().reset_vectorized_for_env(e)
         if self.gaze_agent is not None:
             self.gaze_agent.reset_vectorized_for_env(e)
         if self.nav_to_obj_agent is not None:
@@ -207,13 +215,13 @@ class OVMMAgent(ObjectNavAgent):
         """
         This method is called at the first timestep of every episode before any action is taken.
         """
-        print("Initializing episode...")
-        # use only relevant semantic categories (obj, start_rec, goal_rec) 
-        # maight use more categories if we learn a prior over recs
-        if self.semantic_sensor is not None:
+        if self.verbose:
+            print("Initializing episode...")
+        if self.config.GROUND_TRUTH_SEMANTICS == 0:
             self._update_semantic_vocabs(obs)
-            # self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
-            if (
+            if self.store_all_categories_in_map:
+                self._set_semantic_vocab(SemanticVocab.ALL, force_set=True)
+            elif (
                 self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
                 and not self.skip_skills.nav_to_obj
             ):
@@ -221,18 +229,8 @@ class OVMMAgent(ObjectNavAgent):
             else:
                 self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
 
-        # if self.config.GROUND_TRUTH_SEMANTICS == 0:
-        #     self._update_semantic_vocabs(obs)
-        #     if (
-        #         self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
-        #         and not self.skip_skills.nav_to_obj
-        #     ):
-        #         self._set_semantic_vocab(SemanticVocab.FULL, force_set=True)
-        #     else:
-        #         self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=True)
-
     def _switch_to_next_skill(
-        self, e: int, next_skill: Skill, info: Dict[str, Any], obs: Observations = None
+        self, e: int, next_skill: Skill, info: Dict[str, Any]
     ) -> DiscreteNavigationAction:
         """Switch to the next skill for environment `e`.
 
@@ -246,7 +244,8 @@ class OVMMAgent(ObjectNavAgent):
             # action = DiscreteNavigationAction.NAVIGATION_MODE
             pass
         elif next_skill == Skill.GAZE_AT_OBJ:
-            self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=False)
+            if not self.store_all_categories_in_map:
+                self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=False)
             self.gaze_at_obj_start_step[e] = self.timesteps[e]
         elif next_skill == Skill.PICK:
             self.pick_start_step[e] = self.timesteps[e]
@@ -254,12 +253,14 @@ class OVMMAgent(ObjectNavAgent):
             self.timesteps_before_goal_update[e] = 0
             if not self.skip_skills.nav_to_rec:
                 action = DiscreteNavigationAction.NAVIGATION_MODE
-                if self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl":
+                if (
+                    self.config.AGENT.SKILLS.NAV_TO_OBJ.type == "rl"
+                    and not self.store_all_categories_in_map
+                ):
                     self._set_semantic_vocab(SemanticVocab.FULL, force_set=False)
-                else:
-                    self.change_to_rec(0,obs)
         elif next_skill == Skill.GAZE_AT_REC:
-            self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=False)
+            if not self.store_all_categories_in_map:
+                self._set_semantic_vocab(SemanticVocab.SIMPLE, force_set=False)
             # We reuse gaze agent between pick and place
             if self.gaze_agent is not None:
                 self.gaze_agent.reset_vectorized_for_env(e)
@@ -270,9 +271,14 @@ class OVMMAgent(ObjectNavAgent):
         self.states[e] = next_skill
         return action
 
-    def _update_semantic_vocabs(self, obs: Observations):
+    def _update_semantic_vocabs(
+        self, obs: Observations, update_full_vocabulary: bool = True
+    ):
         """
         Sets vocabularies for semantic sensor at the start of episode.
+        Optional-
+        :update_full_vocabulary: if False, only updates simple vocabulary
+        True by default
         """
         obj_id_to_name = {
             0: obs.task_observations["object_name"],
@@ -286,17 +292,26 @@ class OVMMAgent(ObjectNavAgent):
         simple_vocab = build_vocab_from_category_map(
             obj_id_to_name, simple_rec_id_to_name
         )
-        self.semantic_sensor.update_vocubulary_list(simple_vocab, SemanticVocab.SIMPLE)
+        self.semantic_sensor.update_vocabulary_list(simple_vocab, SemanticVocab.SIMPLE)
 
-        # Full vocabulary contains the object and all receptacles
-        full_vocab = build_vocab_from_category_map(obj_id_to_name, self.rec_name_to_id)
-        self.semantic_sensor.update_vocubulary_list(full_vocab, SemanticVocab.FULL)
+        if update_full_vocabulary:
+            # Full vocabulary contains the object and all receptacles
+            full_vocab = build_vocab_from_category_map(
+                obj_id_to_name, self.rec_name_to_id
+            )
+            self.semantic_sensor.update_vocabulary_list(full_vocab, SemanticVocab.FULL)
+
+        # All vocabulary contains all objects and all receptacles
+        all_vocab = build_vocab_from_category_map(
+            self.obj_name_to_id, self.rec_name_to_id
+        )
+        self.semantic_sensor.update_vocabulary_list(all_vocab, SemanticVocab.ALL)
 
     def _set_semantic_vocab(self, vocab_id: SemanticVocab, force_set: bool):
         """
         Set active vocabulary for semantic sensor to use to the given ID.
         """
-        if self.semantic_sensor is not None and (
+        if self.config.GROUND_TRUTH_SEMANTICS == 0 and (
             force_set or self.semantic_sensor.current_vocabulary_id != vocab_id
         ):
             self.semantic_sensor.set_vocabulary(vocab_id)
@@ -380,7 +395,8 @@ class OVMMAgent(ObjectNavAgent):
         if self.skip_skills.nav_to_obj:
             terminate = True
         elif nav_to_obj_type == "heuristic":
-            # print("[OVMM AGENT] step heuristic nav policy")
+            if self.verbose:
+                print("[OVMM AGENT] step heuristic nav policy")
             action, info, terminate = self._heuristic_nav(obs, info)
         elif nav_to_obj_type == "rl":
             action, info, terminate = self.nav_to_obj_agent.act(obs, info)
@@ -392,7 +408,6 @@ class OVMMAgent(ObjectNavAgent):
         if terminate:
             action = None
             new_state = Skill.GAZE_AT_OBJ
-
         return action, info, new_state
 
     def _gaze_at_obj(
@@ -529,12 +544,10 @@ class OVMMAgent(ObjectNavAgent):
         if self.timesteps[0] == 0:
             self._init_episode(obs)
 
-        # if self.config.GROUND_TRUTH_SEMANTICS == 0:
-        #     obs = self.semantic_sensor(obs)
-        # else:
-        #     obs.task_observations["semantic_frame"] = None
-        obs = self.semantic_sensor(obs) # visualize detection
-
+        if self.config.GROUND_TRUTH_SEMANTICS == 0:
+            obs = self.semantic_sensor(obs)
+        else:
+            obs.task_observations["semantic_frame"] = None
         info = self._get_info(obs)
 
         self.timesteps[0] += 1
@@ -566,12 +579,11 @@ class OVMMAgent(ObjectNavAgent):
                 assert (
                     action is None
                 ), f"action must be None when switching states, found {action} instead"
-                action = self._switch_to_next_skill(0, new_state, info, obs)
+                action = self._switch_to_next_skill(0, new_state, info)
         # update the curr skill to the new skill whose action will be executed
         info["curr_skill"] = Skill(self.states[0].item()).name
-        print(f'Executing skill {info["curr_skill"]} at timestep {self.timesteps[0]}')
-
-        if info.get('early_termination', False):
-            print(f'Early termination at timestep {self.timesteps[0]}')
-            action = DiscreteNavigationAction.STOP
+        if self.verbose:
+            print(
+                f'Executing skill {info["curr_skill"]} at timestep {self.timesteps[0]}'
+            )
         return action, info, obs

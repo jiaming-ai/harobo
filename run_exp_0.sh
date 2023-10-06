@@ -2,7 +2,7 @@
 
 trap 'kill 0' SIGINT
 
-GPU_ID=3
+GPU_ID=2
 # #############################################
 # # baseline experiments
 # #############################################
@@ -100,10 +100,19 @@ GPU_ID=3
 #                         --exp_name newlc_ur_gtsm0_run2 --save_video \
 #                         --eval_policy ur --gpu_id $GPU_ID &
 
-python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
-                    --exp_name timing_ig_rendering \
-                    --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.ig_predictor_type=rendering &
+# python eval_agent.py --no_render --no_interactive --eval_eps_total_num 200 \
+#                     --exp_name timing_ig_rendering \
+#                     --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.ig_predictor_type=rendering &
 
+exp_name=(True False)
+
+for exn in "${exp_name[@]}"
+do
+    python eval_all_stage.py --no_render --no_interactive --eval_eps_total_num 200 \
+                        --exp_name all_stage_rec_det_$exn --save_video \
+                        --eval_policy ur --gpu_id $GPU_ID AGENT.IG_PLANNER.use_instance_based_goal_rec=$exn &
+    GPU_ID=$((GPU_ID+1))
+done
 # exp_name=(1 0) # add habitat web
 # for exn in "${exp_name[@]}"
 # do

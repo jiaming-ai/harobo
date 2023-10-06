@@ -15,7 +15,8 @@
 # python train_igp.py --exp_name unet_c16_lossis1_dlis10_more --options net.c0=16,net.i_s_weight=1,,dataloader.i_s_weight=10
 # python train_igp.py --exp_name unet_c16_lossis1_dlis5_more_more --options net.c0=16,net.i_s_weight=1,dataloader.i_s_weight=5
 # python train_igp.py --exp_name unet_c32_lossis1_dlis5_more_more --options net.c0=32,net.i_s_weight=1,dataloader.i_s_weight=5
-python train_igp.py --exp_name unet_c16_lossis1_dlis2_more_more --options net.c0=16,net.i_s_weight=1,dataloader.i_s_weight=2
+# python train_igp.py --exp_name unet_c16_lossis1_dlis2_more_more --options net.c0=16,net.i_s_weight=1,dataloader.i_s_weight=2
+python train_igp.py --exp_name unet_c16_lossis1_dlis1_more_more --options net.c0=16,net.i_s_weight=1,dataloader.i_s_weight=1
 # python train_igp.py --exp_name unet_c16_lossis1_dlis5_more_noda --options net.c0=16,net.i_s_weight=1,dataloader.i_s_weight=5,dataloader.random_rotate=False
 
 # python train_igp.py --exp_name unet_c16_lossis1_dlis2_more --options net.c0=16,net.i_s_weight=1,dataloader.i_s_weight=2

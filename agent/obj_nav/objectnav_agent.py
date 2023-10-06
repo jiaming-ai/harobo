@@ -2,13 +2,15 @@
 from typing import Any, Dict, List, Tuple
 from collections import deque
 import numpy as np
+from skimage.measure import find_contours
+
 import time
 import torch
 from torch.nn import DataParallel
 import home_robot.utils.pose as pu
 from home_robot.core.abstract_agent import Agent
 from home_robot.core.interfaces import DiscreteNavigationAction, Observations, ContinuousNavigationAction
-from mapping.polo.polo_map_state import POLoMapState
+from mapping.polo.polo_map_state import POLoMapState, dialate_tensor
 from .objectnav_agent_module import ObjectNavAgentModule
 from mapping.polo.constants import MapConstants as MC
 import home_robot.mapping.map_utils as mu
@@ -163,6 +165,13 @@ class ObjectNavAgent(Agent):
         self._hgoal_stuck_count = np.zeros(self.num_environments,dtype=int) # num of times we have been stuck for the same high goal
         self._last_action = [None for _ in range(self.num_environments)]
         self._last_pose = [None for _ in range(self.num_environments)]
+        self._max_obj_detection_scores = np.zeros(self.num_environments) # to track the highest object detection score
+
+        self._to_end_rec = np.zeros(self.num_environments,dtype=bool) # to track if searching for the end receptacle
+        self._end_rec_ins_idx = np.zeros(self.num_environments,dtype=int) # to track the instance index of the current goal end receptacle
+        
+        self.use_instance_based_goal_rec = config.AGENT.IG_PLANNER.use_instance_based_goal_rec
+        self._terminate_list = [False for _ in range(self.num_environments)]
         
     def force_update_high_goal(self,e):
         self._force_goal_update_once[e] = True
@@ -214,6 +223,8 @@ class ObjectNavAgent(Agent):
             self._state[e] = STATES.SEARCHING # go to ur goal
             self._look_around_steps[e] = 0 # reset look around steps
             self.timesteps_before_goal_update[e] = 0 # relan for the next ur goal
+            # avoid checking the same area again
+            self._mark_hgoal_unreachable(e,10)
 
         return action
     
@@ -259,24 +270,186 @@ class ObjectNavAgent(Agent):
         return planner_inputs, planner_outputs
     
     def _update_hgoal_map(self,e):
-        goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
-        self._ur_local_goal_coords[e] = goal_coords
-        goal_map = self._get_goal_map(goal_coords)
+        if self._state[e] == STATES.GOING_TO_GOAL:
+            if self._to_end_rec[e]:
+                # TODO: instance based goal rec selection
+                if self.use_instance_based_goal_rec:
+                    goal_map = self._get_end_rec_goal_map_ins(e,3)
+                else:
+                    goal_map = self._get_end_rec_goal_simple(e,3)
+            else:
+                # goal_map = self._detect_object_goal_simple(e,1,2)
+                # fine grined control over which object to go to
+                goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
+                self._ur_local_goal_coords[e] = goal_coords
+                goal_map = self._get_goal_map(goal_coords)
+        else:
+            goal_coords = self.semantic_map.hab_world_to_map_local_frame(e, self._global_hgoal_pose[e])
+            self._ur_local_goal_coords[e] = goal_coords
+            goal_map = self._get_goal_map(goal_coords)
+
         self.semantic_map.update_goal_for_env(e, goal_map)
 
+    def _get_object_goal_ins(self,e,goal_idx,rec_idx=None):
+        """
+        Instance based object goal selection
+        """
+        
+        obj_map_ori = self.semantic_map.local_map[e, MC.NON_SEM_CHANNELS+goal_idx]
+        goal_map = dialate_tensor(obj_map_ori.unsqueeze(0))[0]
+        goal_map = goal_map.cpu().numpy()
 
-    def _detect_object_goal(self,e,goal_idx,rec_idx=None):
+        if goal_map.sum() == 0:
+            return None
+
+        # we need to cluster the goal map into different objects
+        # and find the corresponding bounding boxes for the dilated goal map
         
-        goal_map = self.semantic_map.local_map[:, MC.NON_SEM_CHANNELS+goal_idx].clone()>0.5
+        # we need to identify each of the possible goals
+        # TODO: how to choose threshold?
+        contours = find_contours(goal_map,0.5)
+        # find the bounding box of each contour
         
+        if len(contours) == 0:
+            return None
+        
+        bboxs = []
+        for contour in contours:
+            Xmin = np.rint(np.min(contour[:,0])).astype(int)
+            Xmax = np.rint(np.max(contour[:,0])).astype(int)
+            Ymin = np.rint(np.min(contour[:,1])).astype(int)
+            Ymax = np.rint(np.max(contour[:,1])).astype(int)
+            
+            bboxs.append([Xmin, Xmax, Ymin, Ymax])
+        
+
+        # then we calculate the object scores for each identified object
         if rec_idx is not None:
-            rec_map = self.semantic_map.local_map[:, MC.NON_SEM_CHANNELS+rec_idx].clone()>0.5
-            goal_map *= rec_map
-        
-        goal_map = goal_map > 0
-        self._found_goal = goal_map.sum((1,2)) > 0
-        return goal_map.cpu().numpy()
+            rec_map = self.semantic_map.local_map[e, MC.NON_SEM_CHANNELS+rec_idx]>0.3
+            goal_map *= rec_map.cpu().numpy()
 
+
+        # find the object with highest scores
+        obj_scores = []
+        for bbox in bboxs:
+            obj_map = goal_map[bbox[0]:bbox[1],bbox[2]:bbox[3]]
+            # obj_size = obj_map.numel()
+            obj_prob = obj_map.sum()
+            obj_scores.append(obj_prob)
+
+        visualize=False
+        if visualize:
+            import matplotlib.pyplot as plt
+            plt.imshow(goal_map)
+            for bbox in bboxs:
+                plt.plot([bbox[2],bbox[2],bbox[3],bbox[3],bbox[2]],[bbox[0],bbox[1],bbox[1],bbox[0],bbox[0]])
+            plt.show()
+
+        obj_scores = np.array(obj_scores)
+        obj_idx = np.argmax(obj_scores)
+
+        if obj_scores[obj_idx] > 0:
+            obj_bbox = bboxs[obj_idx]
+            goal_map_chosen = np.zeros_like(goal_map)
+            goal_map_chosen[obj_bbox[0]:obj_bbox[1],obj_bbox[2]:obj_bbox[3]] = \
+                (obj_map_ori[obj_bbox[0]:obj_bbox[1],obj_bbox[2]:obj_bbox[3]]>0).cpu().numpy()
+            goal_map = goal_map_chosen
+        else:
+            goal_map = None
+
+        return goal_map
+
+    def _get_object_goal_simple(self,e,goal_idx,rec_idx=None):
+        
+        obj_map_ori = self.semantic_map.local_map[e, MC.NON_SEM_CHANNELS+goal_idx]
+        goal_map = dialate_tensor(obj_map_ori.unsqueeze(0))[0]
+        goal_map = goal_map.cpu().numpy()
+
+        rec_map = self.semantic_map.local_map[e, MC.NON_SEM_CHANNELS+rec_idx]>0.3
+        goal_map *= rec_map.cpu().numpy()
+
+        if goal_map.sum() > 0:
+            goal_map = goal_map > 0
+        else:
+            goal_map = None
+
+        return goal_map
+
+    def _get_end_rec_goal_map_ins(self,e,end_recep_goal_idx):
+        """
+        Instance based goal selection
+        """
+        # TODO: we get n instances each time?
+        while self._end_rec_ins_idx[e] < len(self.semantic_map.global_instances[e][end_recep_goal_idx]):
+            obj_map_ori = self.semantic_map.local_map[e, MC.NON_SEM_CHANNELS+end_recep_goal_idx].cpu().numpy()
+            instance_bb_global = self.semantic_map.global_instances[e][end_recep_goal_idx][self._end_rec_ins_idx[e]]['bb']
+            lmb = self.semantic_map.lmb[e]
+            instance_bb = [instance_bb_global[0]-lmb[0],instance_bb_global[1]-lmb[0],instance_bb_global[2]-lmb[2],instance_bb_global[3]-lmb[2]]
+            goal_map = np.zeros_like(obj_map_ori)
+            goal_map[instance_bb[0]:instance_bb[1],instance_bb[2]:instance_bb[3]] = \
+                obj_map_ori[instance_bb[0]:instance_bb[1],instance_bb[2]:instance_bb[3]]
+            
+            goal_map = goal_map > 0.5
+            if goal_map.sum() > 0:
+                return goal_map
+            else:
+                self._end_rec_ins_idx[e] += 1
+
+        return None
+    
+    def _get_end_rec_goal_simple(self,e,end_recep_goal_idx):
+        obj_map_ori = self.semantic_map.local_map[e, MC.NON_SEM_CHANNELS+end_recep_goal_idx]
+        goal_map = obj_map_ori.cpu().numpy()>0.5
+
+        return goal_map
+    
+    def _detect_goal(self,e,obs,filter=True):
+        """
+        Detect the goal object and set found goal
+        """
+        goal_obj_idx,start_rec_idx,end_rec_idx = obs.task_observations["object_goal"], \
+                                                obs.task_observations["start_recep_goal"], \
+                                                obs.task_observations["end_recep_goal"]
+        
+        # if not self._to_end_rec[0]:
+        #     if not self._found_goal[0] and ( \
+        #         (obs.semantic == obs.task_observations["object_goal"]).any() or \
+        #         (obs.semantic == obs.task_observations["start_recep_goal"]).any() ):
+        #         object_goal_map = self._detect_goal(0,object_goal_category[0],start_recep_goal_category[0])
+
+        #     # TODO: the map doesn't support object instance identification, so we can't track the max score
+        #     # obj_idx = detection_results['classes'][0]==object_goal_category[0]
+        #     # if len(obj_idx) > 0:
+        #     #     object_goal_map = self._detect_object_goal(0,object_goal_category[0],start_recep_goal_category[0])
+        #         # obj_scores = detection_results['scores'][0][obj_idx]
+        #         # if obj_scores.max() > self._max_obj_detection_scores[0]:
+        #         #     object_goal_map = self._detect_object_goal(0,object_goal_category[0],start_recep_goal_category[0])
+        #         # reset the new goal with the highest score
+        #             # self._set_object_goal(0,object_goal_map)
+        # else:
+        #     if not self._found_goal[0] and (obs.semantic == obs.task_observations["end_recep_goal"]).any():
+        #         object_goal_map = self._detect_goal(0,end_recep_goal_category[0])
+        
+        
+        if self._to_end_rec[e]:
+            if self.use_instance_based_goal_rec:
+                goal_map = self._get_end_rec_goal_map_ins(e,end_rec_idx)
+            else:
+                goal_map = self._get_end_rec_goal_simple(e,end_rec_idx)
+        
+        else:
+            goal_map = self._get_object_goal_ins(e,goal_obj_idx,start_rec_idx)
+
+        if goal_map is not None and goal_map.sum() > 0:
+            self._found_goal[e] = 1 
+
+            # so that we only update the goal once. 
+            # TODO: is this necessary?
+            if self._state[0] in [STATES.SEARCHING,STATES.CHECKING]:
+                self._set_object_goal(e,goal_map)
+        
+        return goal_map
+      
     def _set_object_goal(self,e,object_goal_map):
 
         self.semantic_map.update_goal_for_env(e, object_goal_map)
@@ -291,23 +464,43 @@ class ObjectNavAgent(Agent):
         self._state[e] = STATES.GOING_TO_GOAL # go to object goal
         self._hgoal_stuck_count[e] = 0
 
-    def _mark_hgoal_unreachable(self,e):
+    def _mark_hgoal_unreachable(self,e,mark_radius=5):
         hgoal_global_coords = self.semantic_map.hab_world_to_map_global_frame(e, self._global_hgoal_pose[e])
-        mark_radius = 5
         x1 = max(0, hgoal_global_coords[e,0] - mark_radius)
         x2 = min(self.semantic_map.global_map.shape[2], hgoal_global_coords[e,0] + mark_radius)
         y1 = max(0, hgoal_global_coords[e,1] - mark_radius)
         y2 = min(self.semantic_map.global_map.shape[3], hgoal_global_coords[e,1] + mark_radius)
 
-        # TODO: we should mark the goal as unreachable
         self.semantic_map.hgoal_unreachable[e,x1:x2,y1:y2] = 1
 
         # lmb = self.semantic_map.lmb
         # self.semantic_map.local_map[e,MC.OBSTACLE_MAP] = \
         #     self.semantic_map.global_map[e,MC.OBSTACLE_MAP,lmb[e,0]:lmb[e,1], lmb[e,2]:lmb[e,3]]
-                                                                                      
+                                                            
     # ------------------------------------------------------------------
     
+    def change_to_rec(self,e, obs):
+        """
+        Start to navigate to the end receptacle
+        """
+        self._found_goal[e] = 0
+        self._to_end_rec[e] = True
+
+        # clear probs in map
+        self.semantic_map.clear_prob_maps(e)
+        
+        self._state[e] = STATES.SEARCHING
+
+        # detect using current map
+        object_goal_map = self._detect_goal(e, obs)
+
+        # reset hgoal states
+        self._hgoal_stuck_count[e] = 0
+        self.semantic_map.hgoal_unreachable[e] = 0
+        
+        # reset planner states
+        self.planner.reset_for_rec()
+        
     @torch.no_grad()
     def act(
         self,obs
@@ -335,15 +528,15 @@ class ObjectNavAgent(Agent):
         # update map
 
         # Update map with observations and generate map features
-        updated_local_map, updated_local_pose, extras = self.module(
+        updated_local_map, updated_local_pose, instances = self.module(
             obs_processed,
             pose_delta,
             camera_pose,
             self.semantic_map.local_map,
             self.semantic_map.local_pose,
-            detection_results
+            detection_results,
+            self.semantic_map.lmb,
         )
-
 
         for e in range(self.num_environments):
             lmb = self.semantic_map.lmb
@@ -360,11 +553,30 @@ class ObjectNavAgent(Agent):
                 self.map_size_parameters,
             )
 
+        if instances is not None:
+            self.semantic_map.update_instances(0, instances)
+
+            visualize=False
+            if visualize:
+                import matplotlib.pyplot as plt
+                # plot the object goal, start receptacle goal, end receptacle goal
+                for i in range(1,4):
+                    ax = plt.subplot(1,3,i)
+                    ax.imshow(self.semantic_map.global_map[0,MC.NON_SEM_CHANNELS+i].cpu().numpy())
+                    for ins in self.semantic_map.global_instances[0][i]:
+                        bbox = ins['bb']
+                        ax.plot([bbox[2],bbox[2],bbox[3],bbox[3],bbox[2]],[bbox[0],bbox[1],bbox[1],bbox[0],bbox[0]])
+                plt.show()
+                
+               
         # t2 = time.time()
         # print(f"[Agent] Semantic mapping time: {t2 - t1:.2f}")
 
-        # detect if object goal is found
-        object_goal_map = self._detect_object_goal(0,object_goal_category[0],start_recep_goal_category[0])
+        # detect if an goal object is identified, 
+        # to speed up, we only call the detection if a new object with higher scores is detected
+        # trigger state change if object goal is found
+        for e in range(self.num_environments):
+            self._detect_goal(e,obs)
 
         # detect if map has changed
         obs_num = self.semantic_map.global_map[:, MC.OBSTACLE_MAP].sum((1,2)).int().cpu().numpy()
@@ -372,6 +584,8 @@ class ObjectNavAgent(Agent):
         self._pre_num_obstacles = obs_num
 
         # detect collision
+        # TODO: we should check the total travelled distance of last N steps
+        # if the distance is too small, we consider a stuck
         curr_pose = self.semantic_map.global_pose[:2].cpu().numpy()
 
         for e in range(self.num_environments):
@@ -380,22 +594,15 @@ class ObjectNavAgent(Agent):
                 type(last_action) == ContinuousNavigationAction
                 and np.linalg.norm(last_action.xyt[:2]) > 0
             ):
-                if np.allclose(self._last_pose[e], curr_pose):
+                travel_dist = np.linalg.norm(self._last_pose[e] - curr_pose[e])
+                if travel_dist < 0.15:
                     self._hgoal_stuck_count += 1
             self._last_pose[e] = curr_pose[e]
             
-        # -----------------------------------------------
-        # trigger state change if object goal is found
-        for e in range(self.num_environments):
-            if self._found_goal[e] and self._state[e] in [STATES.SEARCHING,STATES.CHECKING]:
-                self._set_object_goal(e,object_goal_map[e])
-
-        # -----------------------------------------------
         # step
         ig_vis_list = [None for e in range(self.num_environments)]
         lc_input_list = [{} for _ in range(self.num_environments)]
         lc_output_list = [{} for _ in range(self.num_environments)]
-        terminate_list = [False for _ in range(self.num_environments)]
         for e in range(self.num_environments):
             """
             UR Exploration:
@@ -410,7 +617,7 @@ class ObjectNavAgent(Agent):
                 # first check if we need to update the high goal
                 need_update = self._check_n_update_need_replan_ur_goal(e)
                 
-                hgoal_stuck_too_much = self._hgoal_stuck_count[e] > 10
+                hgoal_stuck_too_much = self._hgoal_stuck_count[e] > 8
                 if need_update or hgoal_stuck_too_much:
                     if hgoal_stuck_too_much:
                         print("hgoal stuck too much, replan hgoal")
@@ -426,18 +633,26 @@ class ObjectNavAgent(Agent):
 
                 replan_hgoal = lc_output_list[e]['replan_hgoal']
 
-                while replan_hgoal:
+                replan_num = 0 
+                replan_num_max = 10
+                while replan_hgoal and replan_num < replan_num_max:
                     # replan the high goal
                     self._mark_hgoal_unreachable(e)
                     ig_vis_list[e] = self._plan_hgoal(e)
                     lc_input_list[e], lc_output_list[e] = self._call_low_level_planner(e)
                     replan_hgoal = lc_output_list[e]['replan_hgoal']
+                    replan_num += 1
 
                 action = lc_output_list[e]['action']
                 # transit to state CHECKING if we are close to the high goal
                 if lc_output_list[e]['reach_hgoal']:
                     self._state[e] = STATES.CHECKING
 
+                if replan_num >= replan_num_max:
+                    print("replan too many times, terminate episode")
+                    self._terminate_list[e] = True
+                    action = DiscreteNavigationAction.STOP
+                    
             elif self._state[e] == STATES.CHECKING:
                 # this will transit to state SEARCH if we finish looking around
                 action = self._look_around(e)
@@ -447,15 +662,28 @@ class ObjectNavAgent(Agent):
                 lc_input_list[e], lc_output_list[e] = self._call_low_level_planner(e)
                 action = lc_output_list[e]['action']
                 if lc_output_list[e]['end_episode']:
-                    terminate_list[e] = True
+                    if self._to_end_rec[e] and self.use_instance_based_goal_rec and \
+                        self._end_rec_ins_idx[e] < len(self.semantic_map.global_instances[e][3]):
+                        self._end_rec_ins_idx[e] += 1
+                        self._hgoal_stuck_count[e] = 0
+                        self._update_hgoal_map(e)
+                    else:
+                        self._terminate_list[e] = True
+                        action = DiscreteNavigationAction.STOP
                 
-                if self._hgoal_stuck_count[e] % 20 == 19:
-                    # we should only do this once
-                    self.planner.relax_goal_tolerance(self._hgoal_stuck_count[e])
-                    print("relax goal tolerance")
+                if self._hgoal_stuck_count[e] % 10 == 9:
+                    if self._to_end_rec[e] and self.use_instance_based_goal_rec and \
+                        self._end_rec_ins_idx[e] < len(self.semantic_map.global_instances[e][3]):
+                        self._end_rec_ins_idx[e] += 1
+                        self._hgoal_stuck_count[e] = 0
+                        self._update_hgoal_map(e)
+                    else:
+                        # we should only do this once
+                        self.planner.relax_goal_tolerance(self._hgoal_stuck_count[e])
+                        print("relax goal tolerance")
                     
-                if self._hgoal_stuck_count[e] > 60:
-                    terminate_list[e] = True
+                if self._hgoal_stuck_count[e] > 40:
+                    self._terminate_list[e] = True
                     action = DiscreteNavigationAction.STOP
                     
                     print("hgoal stuck too much, terminate episode")
@@ -463,13 +691,18 @@ class ObjectNavAgent(Agent):
             else:
                 raise ValueError("Invalid state")
                 
+        # if low level controller want to terminate
+        if lc_output_list[0].get('end_episode',False):
+            action = DiscreteNavigationAction.STOP
+            self._terminate_list[0] = True
+
         self.timesteps = [self.timesteps[e] + 1 for e in range(self.num_environments)]
         
         if self.visualize:
             vis_inputs = [
                 {
                     "timestep": self.timesteps[e],
-                    "checking_area": extras["checking_area"][e] if "checking_area" in extras else None,
+                    "checking_area": None,
                     "exp_coverage": self.semantic_map.get_exp_coverage_area(e),
                     "close_coverage": self.semantic_map.get_close_coverage_area(e),
                     "entropy": self.semantic_map.get_probability_map_entropy(e),
@@ -495,7 +728,8 @@ class ObjectNavAgent(Agent):
             info = {**lc_input_list[0], **vis_inputs[0]}
         
         self._last_action[0] = action
-        info['early_termination'] = terminate_list[0]
+            
+        info['early_termination'] = self._terminate_list[0]
 
         if self.timesteps[0] % 100 == 99:
             # decay the util_lambda
@@ -530,6 +764,10 @@ class ObjectNavAgent(Agent):
         self._last_action = [None for _ in range(self.num_environments)]
         self._last_pose = [None for _ in range(self.num_environments)]
         self._util_lambda = self.init_util_lambda # we can decay this over time
+        self._max_obj_detection_scores = np.zeros(self.num_environments) # to track the highest object detection score
+        self._to_end_rec = np.zeros(self.num_environments,dtype=bool) # to track if searching for the end receptacle
+        self._end_rec_ins_idx = np.zeros(self.num_environments,dtype=int) # to track the instance index of the current goal end receptacle
+        self._terminate_list = [False for _ in range(self.num_environments)]
 
     def reset_vectorized_for_env(self, e: int, episode=None):
         """Initialize agent state for a specific environment."""
@@ -555,6 +793,10 @@ class ObjectNavAgent(Agent):
         self._last_action[e] = None
         self._last_pose[e] = None
         self._util_lambda = self.init_util_lambda # we can decay this over time
+        self._max_obj_detection_scores[e] = 0
+        self._to_end_rec[e] = False
+        self._end_rec_ins_idx[e] = 0
+        self._terminate_list[e] = False
     # ---------------------------------------------------------------------
     # Inference methods to interact with the robot or a single un-vectorized
     # simulation environment
@@ -714,6 +956,15 @@ class ObjectNavAgent(Agent):
         
     def _compute_info_gains_igp(self,e):
 
+        # points, feats = self.semantic_map.get_global_pointcloud(e) # [P, 3], [P, 1]
+        # feats = feats.unsqueeze(0) # [1, P, 1]
+        # point_idx = self.semantic_map.get_global_pointcloud_flat_idx(e).squeeze(-1).cpu().to(torch.int32)
+        # p = feats[0].squeeze(-1).cpu().to(torch.float16) # save space
+        # pred_pc = self.ig_predictor.predict_pc(point_idx, p) # [2, P]
+
+        # save for debug
+        # torch.save([point_idx, p],f'data/info_gain/test/{self.timesteps[0]}.pt')
+
         voxel = self.semantic_map.get_global_voxel(e)
         pred = self.ig_predictor.predict(voxel)
         # obstacle = self.semantic_map.global_map[e,0] > 0 # [M x M]
@@ -727,13 +978,17 @@ class ObjectNavAgent(Agent):
         
         pred_ig = pred[0] + self.info_gain_alpha * pred[1] / self.ig_predictor.i_s_weight
 
+        if pred_ig.max() < 0.1:
+            print("WARNING: all info gains are too small, terminate episode")
+            self._terminate_list[e] = True
+
         vis = {}
         if self.visualize:
             vis['cs'] = render_plt_image(pred[0])
-            vis['is'] = render_plt_image(pred[1]/5) 
+            vis['is'] = render_plt_image(pred[1]/self.ig_predictor.i_s_weight) 
             vis['ig'] = render_plt_image(pred_ig)
 
-        # return local_exp_pos_map_frame_sorted, exp_pos_sorted, info_sorted, pred_ig, vis
+                
         return pred_ig, vis
     
     def _preprocess_obs(self, obs: Observations):
@@ -765,8 +1020,11 @@ class ObjectNavAgent(Agent):
         # if self.use_probability_map:
         # we always update the prob map for evaluation
         relevance = torch.zeros(obs.task_observations['semantic_max_val']+1).to(self.device)
-        relevance[obs.task_observations['object_goal']] = 1
-        relevance[obs.task_observations['start_recep_goal']] = 0.7
+        if not self._to_end_rec[0]:
+            relevance[obs.task_observations['object_goal']] = 1
+            relevance[obs.task_observations['start_recep_goal']] = 0.7
+        else:
+            relevance[obs.task_observations['end_recep_goal']] = 1
         detection_results = {'scores':torch.tensor(obs.task_observations['instance_scores']).unsqueeze(0),
                                 'classes':torch.tensor(obs.task_observations['instance_classes']).unsqueeze(0),
                                 'masks':torch.tensor(obs.task_observations['masks']).unsqueeze(0),

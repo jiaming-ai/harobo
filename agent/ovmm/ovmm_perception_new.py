@@ -1,56 +1,16 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+
 import json
 from typing import Dict, Tuple
 
 from home_robot.core.interfaces import Observations
 from home_robot.perception.constants import RearrangeDETICCategories
-from perception.detection.detic_perception import DeticPerception
-import numpy as np
+from home_robot.perception.detection.detic.detic_perception import DeticPerception
 
-SYNONYMS = {
-    "bed": "bed",
-    "bench": "bench",
-    "cabinet": "cupboard closet cabinet",
-    "chair": "chair",
-    "chest_of_drawers": "dresser chest-of-drawers",
-    "couch": "sofa couch",
-    "counter": "countertop worktop counter",
-    "filing_cabinet": "file-cabinet file-drawer filing-cabinet",
-    "hamper": "basket hamper",
-    "serving_cart": "cart serving-cart",
-    "shelves": "shelving racks shelves",
-    "shoe_rack": "shoe-rack shoe-shelf",
-    "sink": "basin washbasin sink",
-    "stand": "stand",
-    "stool": "stool",
-    "table": "table",
-    "toilet": "toilet",
-    "trunk": "chest trunk",
-    "wardrobe": "closet cabinet wardrobe",
-    "washer_dryer": "washing-machine laundry-machine washer-dryer",
-}
-
-SYNONYMS_GENERAL = {
-    "bed": "bed",
-    "bench": "bench",
-    "cabinet": "cupboard closet cabinet",
-    "chair": "chair",
-    "chest_of_drawers": "dresser chest-of-drawers drawer storage",
-    "couch": "sofa couch",
-    "counter": "countertop worktop counter table-top",
-    "filing_cabinet": "file-cabinet file-drawer filing-cabinet",
-    "hamper": "basket hamper",
-    "serving_cart": "cart serving-cart",
-    "shelves": "shelving racks shelves",
-    "shoe_rack": "shoe-rack shoe-shelf",
-    "sink": "basin washbasin sink",
-    "stand": "stand",
-    "stool": "stool",
-    "table": "table",
-    "toilet": "toilet",
-    "trunk": "chest trunk",
-    "wardrobe": "closet cabinet wardrobe",
-    "washer_dryer": "washing-machine laundry-machine washer-dryer",
-}
 
 def read_category_map_file(
     category_map_file: str,
@@ -118,6 +78,7 @@ class OvmmPerception:
                 vocabulary="custom",
                 custom_vocabulary=".",
                 sem_gpu_id=gpu_device_id,
+                verbose=verbose,
             )
         elif self._detection_module == "grounded_sam":
             from home_robot.perception.detection.grounded_sam.grounded_sam_perception import (
@@ -132,8 +93,6 @@ class OvmmPerception:
         else:
             raise NotImplementedError
 
-        # self._use_probabilistic_mapping = config.AGENT.SEMANTIC_MAP.use_probability_map
-
     @property
     def current_vocabulary_id(self) -> int:
         return self._current_vocabulary_id
@@ -142,7 +101,7 @@ class OvmmPerception:
     def current_vocabulary(self) -> RearrangeDETICCategories:
         return self._current_vocabulary
 
-    def update_vocubulary_list(
+    def update_vocabulary_list(
         self, vocabulary: RearrangeDETICCategories, vocabulary_id: int
     ):
         """
@@ -150,32 +109,20 @@ class OvmmPerception:
         """
         self._vocabularies[vocabulary_id] = vocabulary
 
-    def set_vocabulary(self, vocabulary_id: int, use_synonyms: int = 0):
+    def set_vocabulary(self, vocabulary_id: int):
         """
         Set given vocabulary ID to be the active vocabulary that the segmentation model uses.
         """
         vocabulary = self._vocabularies[vocabulary_id]
-        clip_vocal_list = ["."] + list(vocabulary.goal_id_to_goal_name.values()) + ["other"]
-        # synonyms
-        if use_synonyms == 1:
-            synonyms = SYNONYMS
-        elif use_synonyms == 2:
-            synonyms = SYNONYMS_GENERAL
-        else:
-            synonyms = {}
-        for i in range(len(clip_vocal_list)):
-            if clip_vocal_list[i] in synonyms:
-                clip_vocal_list[i] = synonyms[clip_vocal_list[i]]
-
-        self._segmentation.reset_vocab(clip_vocal_list)
+        self._segmentation.reset_vocab(
+            ["."] + list(vocabulary.goal_id_to_goal_name.values()) + ["other"]
+        )
         self.vocabulary_name_to_id = {
             name: id for id, name in vocabulary.goal_id_to_goal_name.items()
         }
         self._current_vocabulary = vocabulary
         self._current_vocabulary_id = vocabulary_id
 
-
-    
     def _process_obs(self, obs: Observations):
         """
         Process observations. Add pointers to objects and other metadata in segmentation mask.
@@ -211,49 +158,18 @@ class OvmmPerception:
     def __call__(self, obs: Observations) -> Observations:
         return self.forward(obs)
 
-    # def predict(self, obs: Observations, depth_threshold: float = 0.5) -> Observations:
-    #     """Run with no postprocessing. Updates observation to add semantics."""
-    #     return self._segmentation.predict(
-    #         obs,
-    #         depth_threshold=depth_threshold,
-    #         draw_instance_predictions=self._use_detic_viz,
-    #     )
+    def predict(self, obs: Observations, depth_threshold: float = 0.5) -> Observations:
+        """Run with no postprocessing. Updates observation to add semantics."""
+        return self._segmentation.predict(
+            obs,
+            depth_threshold=depth_threshold,
+            draw_instance_predictions=self._use_detic_viz,
+        )
 
     def forward(self, obs: Observations, depth_threshold: float = 0.5) -> Observations:
         """
         Run segmentation model and preprocess observations for OVMM skills
         """
-        ret = self._segmentation.predict(
-            obs, depth_threshold=depth_threshold, 
-            draw_instance_predictions=self._use_detic_viz,
-        )
-        obs.task_observations["semantic_frame"] = ret["semantic_frame"]
-        obs.task_observations["instance_map"] = ret["instance_map"]
-        obs.task_observations["instance_classes"] = ret["instance_classes"]
-        obs.task_observations["instance_scores"] = ret["instance_scores"]
-        obs.task_observations["masks"] = ret["masks"]
-
-        if not self.config.GROUND_TRUTH_SEMANTICS:
-            obs.semantic = ret['semantic']
-            self._process_obs(obs)
-            
-        else:
-            instance_classes = np.array([
-                obs.task_observations["object_goal"],
-                obs.task_observations["start_recep_goal"],
-                obs.task_observations["end_recep_goal"]
-                ]) # corresponds to object, start_recep, end_recep
-            instance_scores = np.array([1,1,1])
-            masks = np.zeros((3,*obs.semantic.shape))
-
-            masks[0] = obs.semantic==obs.task_observations["object_goal"]
-            if "start_recep_goal" in obs.task_observations:
-                masks[1] = obs.semantic==obs.task_observations["start_recep_goal"]
-            if "end_recep_goal" in obs.task_observations:
-                masks[2] = obs.semantic==obs.task_observations["end_recep_goal"]
-
-            obs.task_observations["instance_classes"] = instance_classes
-            obs.task_observations["instance_scores"] = instance_scores
-            obs.task_observations["masks"] = masks
-            
+        obs = self.predict(obs, depth_threshold)
+        self._process_obs(obs)
         return obs

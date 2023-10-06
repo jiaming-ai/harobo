@@ -21,7 +21,8 @@ from utils.visualization import (
 
 
 
-TEST_SCENE_IDS = ['102344049','102816009']
+# TEST_SCENE_IDS = ['102344049','102816009']
+TEST_SCENE_IDS = ['test']
 MAX_DATA_PER_EP = 50
 MIN_DATA_PER_EP = 1
 
@@ -48,6 +49,8 @@ class URPDataset(Dataset):
             self.data_list = train_data_list
         elif split == "test":
             self.data_list = test_data_list
+            # disable random rotate for test split
+            data_config.random_rotate = False
         else:
             raise ValueError("Invalid split")
         
@@ -71,6 +74,11 @@ class URPDataset(Dataset):
             n_views = len(theta_list)
             c_s = c_s.view(-1, n_views).sum(dim=-1)
             i_s = i_s.view(-1, n_views).sum(dim=-1)
+        elif len(data) == 2:
+            flat_idx, p = data
+            global_exp_pos_map_frame = torch.zeros((1,2)).long()
+            c_s = torch.zeros([1])
+            i_s = torch.zeros([1])
         else:
             raise ValueError("Invalid data format")
         
@@ -152,8 +160,11 @@ class URPDataset(Dataset):
                     voxel = T.Pad((crop_size-voxel.shape[2],  crop_size-voxel.shape[1],0,0),fill=-1)(voxel)
                     info_map = T.Pad((crop_size-info_map.shape[2], crop_size-info_map.shape[1],0,0),fill=-1)(info_map)
             
-            # voxel = voxel.permute(1,2,0) # z,x,y -> x,y,z
-          
+            # random removal
+            # if self.data_config.random_removal:
+            #     voxel = voxel * (torch.rand_like(voxel) > 0.5).float()
+            #     info_map = info_map * (torch.rand_like(info_map) > 0.5).float()
+
             # if voxel.max() > 0.5:
             #     print('show here')
             return voxel, info_map

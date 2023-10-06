@@ -270,7 +270,6 @@ class InteractiveEvaluator():
         util_img = np.zeros((640,640,3),dtype=np.uint8)
         sem_map = np.zeros((640,640,3),dtype=np.uint8)
         
-        want_terminate = False
         forward_steps = 0
         init_dts = env.habitat_env.env._env.habitat_env.get_metrics()['ovmm_dist_to_pick_goal']
         exp_coverage_list = []
@@ -282,7 +281,7 @@ class InteractiveEvaluator():
         total_dist = 0
         total_planning_time = 0
         total_ig_time = []
-        early_termination = False
+        nav_early_termination = False
         while ep_idx < env.number_of_episodes:
 
             if self.args.skip_existing:
@@ -299,24 +298,21 @@ class InteractiveEvaluator():
             # print(f'Current pose: {ob.gps*100}, theta: {ob.compass*180/np.pi}')
             start_time = time.time()
             err_msg = None
-            action, agent_info, _ = agent.act(ob)
-            # try:
-            #     action, agent_info, _ = agent.act(ob)
-            # except Exception as e:
-            #     err_msg = str(e)
-            #     action = DiscreteNavigationAction.STOP
-            #     print(f'Error: {err_msg}')
+            # action, agent_info, _ = agent.act(ob)
+            try:
+                action, agent_info, _ = agent.act(ob)
+            except Exception:
+                import traceback
+                err_msg = traceback.format_exc()
+                action = DiscreteNavigationAction.STOP
+                print(f'Error: {err_msg}')
             total_planning_time += time.time() - start_time
      
             if visualize:
                 if agent_info['curr_skill'] in ['NAV_TO_OBJ','NAV_TO_REC']:
                     if 'semantic_map' in agent_info:
-                        early_termination = agent_info['early_termination']
-                        # exp_coverage_list.append(agent_info["exp_coverage"])
-                        # checking_area_list.append(agent_info["checking_area"]+checking_area_list[-1] \
-                            # if len(checking_area_list) > 0 else agent_info["checking_area"])
-                        # entropy_list.append(agent_info["entropy"])
-                        # close_coverage_list.append(agent_info["close_coverage"])
+                        nav_early_termination = agent_info['early_termination']
+                       
 
                 # first visualize thrid person
                 images = {}
@@ -329,7 +325,6 @@ class InteractiveEvaluator():
                 images['depth'] = ob.depth.copy()
                 images['depth'] = (images['depth'] / 10.0 * 255).astype(np.uint8)
     
-                
                 # visualize semantic map
                 sm = agent_info.get('semantic_map',None)
                 if sm is not None:
@@ -345,11 +340,10 @@ class InteractiveEvaluator():
                 #     prob_map = np.flipud(prob_map)
                 
                 # visualize info_gain map for ur policy only
-                if self.args.eval_policy == 'ur':
-                    ig_vis = agent_info.get('ig_vis',None)
-                    if ig_vis is not None:
-                        util_img = ig_vis['utility']
-                        util_img = np.flipud(util_img)
+                ig_vis = agent_info.get('ig_vis',None)
+                if ig_vis is not None:
+                    util_img = ig_vis['utility']
+                    util_img = np.flipud(util_img)
 
                 images['utility'] = util_img
 
@@ -404,15 +398,12 @@ class InteractiveEvaluator():
        
             ob, done, info = outputs
 
-            
-            want_terminate = agent_info.get('early_termination',False)
-            
             dist = np.linalg.norm(ob.gps - pre_pose)
             total_dist += dist
             pre_pose = ob.gps
             
             if done:
-                print(f"Episode {ep_idx} finished success: {info['ovmm_nav_to_pick_succ']}")
+                print(f"Episode {ep_idx} finished ")
                 current_episodes_info = self.env.current_episode()
                 
                 # save evaluation results
@@ -420,28 +411,27 @@ class InteractiveEvaluator():
                 eps_result = {
                     'episode_id': current_episodes_info.episode_id,
                     'scene_id': current_episodes_info.scene_id,
-                    'success': info['ovmm_nav_to_pick_succ'],
-                    'distance_to_goal': info['ovmm_dist_to_pick_goal'],
-                    'travelled_distance': total_dist,
-                    'steps': info['num_steps'],
-                    'want_terminate': want_terminate,
                     'goal_object': ob.task_observations["goal_name"],
-                    'spl': init_dts / max(total_dist, init_dts),
-                    'total_nav_area': total_nav_area,
-                    'exp_coverage': exp_coverage_list,
-                    'checking_area': checking_area_list,
-                    'entropy': entropy_list,
-                    'close_coverage': close_coverage_list,
                     'total_time': total_planning_time,
-                    'ig_times': total_ig_time,
                     'error_msg': err_msg,
-                    'early_termination': early_termination,
+                    'nav_early_termination': nav_early_termination,
                 }
+                eps_result.update(info)
+                
                 results.append(eps_result)
+                succ = str(int(info['ovmm_find_object_phase_success'])) + \
+                    str(int(info['ovmm_pick_object_phase_success'])) + \
+                    str(int(info['ovmm_find_recep_phase_success']))   + \
+                    str(int(info['ovmm_place_object_phase_success']))
+                
+                fname = f'{succ}_{ob.task_observations["goal_name"]}_{current_episodes_info.episode_id}'
+                
                 if err_msg is not None:
-                    fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}_error'
-                else:
-                    fname = f'{ob.task_observations["goal_name"]}_{info["ovmm_nav_to_pick_succ"]}'
+                    fname = 'error_' + fname
+
+                for k,v in eps_result.items():
+                    eps_result[k] = str(v)
+                    
                 with open(f'{result_dir}/{fname}.json', 'w') as f:
                     json.dump(eps_result, f)
                 if self.args.save_video:
@@ -456,7 +446,6 @@ class InteractiveEvaluator():
                 ep_idx += 1
 
                 # reset eval metrics
-                want_terminate = False
                 forward_steps = 0
                 init_dts = env.habitat_env.env._env.habitat_env.get_metrics()['ovmm_dist_to_pick_goal']
                 exp_coverage_list = []
@@ -518,7 +507,7 @@ if __name__ == "__main__":
         "--eval_eps",
         help="evaluate a subset of episodes",
         nargs="+",
-        default=[170],
+        default=None,
     )
     parser.add_argument(
         "--eval_eps_total_num",

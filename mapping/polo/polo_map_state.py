@@ -1,4 +1,3 @@
-# Adapted from https://github.com/facebookresearch/home-robot
 
 import numpy as np
 import torch
@@ -32,6 +31,62 @@ def dialate_tensor(tensor, kernel_size=3):
     return torch.nn.functional.conv2d(
         tensor.unsqueeze(1), kernel, padding=kernel_size // 2
     ).squeeze(1)
+
+def nms(bounding_boxes, confidence_score, threshold=0.5):
+    """
+        Non-max Suppression Algorithm
+    """
+    # If no bounding boxes, return empty list
+    if len(bounding_boxes) == 0:
+        return []
+
+    # Bounding boxes
+    boxes = np.array(bounding_boxes)
+
+    # coordinates of bounding boxes
+    start_x = boxes[:, 0]
+    end_x = boxes[:, 1]
+    start_y = boxes[:, 2]
+    end_y = boxes[:, 3]
+
+    # Confidence scores of bounding boxes
+    score = np.array(confidence_score)
+
+    # Picked bounding boxes
+    picked_idx = []
+
+    # Compute areas of bounding boxes
+    areas = (end_x - start_x + 1) * (end_y - start_y + 1)
+
+    # Sort by confidence score of bounding boxes
+    order = np.argsort(score)
+
+    # Iterate bounding boxes
+    while order.size > 0:
+        # The index of largest confidence score
+        index = order[-1]
+
+        # Pick the bounding box with largest confidence score
+        picked_idx.append(index)
+
+        # Compute ordinates of intersection-over-union(IOU)
+        x1 = np.maximum(start_x[index], start_x[order[:-1]])
+        x2 = np.minimum(end_x[index], end_x[order[:-1]])
+        y1 = np.maximum(start_y[index], start_y[order[:-1]])
+        y2 = np.minimum(end_y[index], end_y[order[:-1]])
+
+        # Compute areas of intersection-over-union
+        w = np.maximum(0.0, x2 - x1 + 1)
+        h = np.maximum(0.0, y2 - y1 + 1)
+        intersection = w * h
+
+        # Compute the ratio between intersection and union
+        ratio = intersection / (areas[index] + areas[order[:-1]] - intersection)
+
+        left = np.where(ratio < threshold)
+        order = order[left]
+
+    return picked_idx
 
 class POLoMapState:
     """
@@ -109,6 +164,7 @@ class POLoMapState:
         # global_pose = gps + map_size_cm/2/100
         self.global_pose = torch.zeros(self.num_environments, 3, device=self.device)
         # always be (12, 12) since the local map is centered at the agent
+        # unless when the agent is at the edge of the map
         self.local_pose = torch.zeros(self.num_environments, 3, device=self.device)
 
         # Origin of local map (3rd dimension stays 0)
@@ -132,7 +188,55 @@ class POLoMapState:
         self.prior_logit = torch.logit(torch.tensor(self.prior))
         self.local_coords = np.array([self.local_map_size // 2, self.local_map_size // 2])
 
+        self.global_instances = [None for _ in range(self.num_environments)]
 
+
+    def _get_center_of_mass(self, e: int):
+        
+        # calculate center of mass of the map using the global obstacle map
+        xs, ys = self.global_map[e,0].nonzero()
+        x1, x2, y1, y2 = xs.min(), xs.max(), ys.min(), ys.max()
+        xc, yc = (x1 + x2) // 2, (y1 + y2) // 2
+        center = [xc, yc]
+        return center
+
+    def recenter_map(self, e: int):
+        new_center = self._get_center_of_mass(e)
+        old_center = [self.global_map_size // 2, self.global_map_size // 2]
+
+        # init a new global map with double size
+        double_size = self.global_map_size * 2
+        double_global_map = torch.zeros(double_size, double_size, device=self.device)
+        double_global_map[MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
+        double_global_map[MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
+        x1,x2 = self.global_map_size // 2, self.global_map_size // 2 + self.global_map_size
+        y1,y2 = self.global_map_size // 2, self.global_map_size // 2 + self.global_map_size
+        double_global_map[:, x1:x2, y1:y2] = self.global_map[e]
+
+        delta = new_center - old_center + self.global_map_size // 2
+        new_global_map = double_global_map[:, delta[0]:delta[0]+self.global_map_size, delta[1]:delta[1]+self.global_map_size]
+        self.global_map[e] = new_global_map
+        
+        # update global pose
+        self.global_pose[e, :2] += (new_center - old_center) * self.resolution
+        
+        # update origins
+        self.origins[e, :2] += (new_center - old_center) * self.resolution
+        
+        # update local pose
+        self.local_pose[e, :2] += (new_center - old_center) * self.resolution
+        
+        # update local map boundaries
+        self.lmb[e, 0] += (new_center - old_center)[0]
+        self.lmb[e, 1] += (new_center - old_center)[0]
+        self.lmb[e, 2] += (new_center - old_center)[1]
+        self.lmb[e, 3] += (new_center - old_center)[1]
+        
+        # update local coords
+        self.local_coords += (new_center - old_center) 
+        
+        
+        
     def init_map_and_pose(self):
         """Initialize global and local map and sensor pose variables."""
         for e in range(self.num_environments):
@@ -155,13 +259,25 @@ class POLoMapState:
         self.goal_map[e] *= 0.0
 
         # Set probability to priors
-        self.global_map[:, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
-        self.local_map[:, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
+        self.global_map[e, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
+        self.local_map[e, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
         
-        self.global_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
-        self.local_map[:, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
+        self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
+        self.local_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] = -torch.inf # marks as empty
 
         self.hgoal_unreachable[e] *= 0.0
+        
+        self.global_instances[e] = {k:[] for k in range(self.num_sem_categories)}
+        
+    def clear_prob_maps(self,e):
+        self.global_map[e, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
+        self.local_map[e, MC.PROBABILITY_MAP, :, :] = torch.logit(torch.tensor(self.prior))
+        
+        occupaid_idx = self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] > - 14
+        self.global_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :][occupaid_idx] = -10
+        
+        occupaid_idx = self.local_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :] > - 14
+        self.local_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :][occupaid_idx] = -10
         
 
     def update_goal_for_env(self, e: int, goal_map: np.ndarray):
@@ -255,10 +371,8 @@ class POLoMapState:
 
     def get_local_pointcloud(self, e,transform_to_hab_world_frame=True, to_meter=True) -> torch.tensor:
         """Get cropped local point cloud for an environment."""
-        # TODO: currently not current
         voxel = self.local_map[e, MC.VOXEL_START:MC.NON_SEM_CHANNELS, :, :]
 
-        
         if transform_to_hab_world_frame:
             voxel = voxel.permute(2,1,0)
             pc = torch.nonzero(~voxel.isinf()).float() # [N, 3]
@@ -435,3 +549,33 @@ class POLoMapState:
         """Get binary goal map encoding current global goal for an
         environment."""
         return self.goal_map[e]
+
+
+    def update_instances(self,e,new_instances):
+        
+        # TODO we can filter the instances so that we only need to perform the NMS on the instances
+        # that are in the local map
+        
+        # global NMS
+        # NMS for both recepticles
+        # TODO: we assumes the recepticle class id is 2,3    
+        if len(new_instances[2]) > 0 or len(new_instances[3]) > 0:
+            combined_instances = new_instances[2] + new_instances[3] \
+                                + self.global_instances[e][2] + self.global_instances[e][3]
+            
+            combined_bb = [ins['bb'] for ins in combined_instances]
+            combined_score = [ins['score'] for ins in combined_instances]
+            combined_class = [ins['class'] for ins in combined_instances]
+
+            picked_idx = nms(combined_bb, combined_score)
+            self.global_instances[e][2] = [combined_instances[i] for i in picked_idx if combined_class[i] == 2]
+            self.global_instances[e][3] = [combined_instances[i] for i in picked_idx if combined_class[i] == 3]
+        
+        # NMS for objects
+        # TODO: we assume the object class id is 1
+        # if len(new_instances[1]) > 0:
+        #     combined_instances = new_instances[1] + self.global_instances[e][1]
+        #     combined_bb = [ins['bb'] for ins in combined_instances]
+        #     combined_score = [ins['score'] for ins in combined_instances]
+        #     picked_idx = nms(combined_bb, combined_score)
+        #     self.global_instances[e][1] = [combined_instances[i] for i in picked_idx]
